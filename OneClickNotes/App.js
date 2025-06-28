@@ -51,7 +51,7 @@ export default function App() {
         playsInSilentModeIOS: true,
       });
     } catch (error) {
-      console.log('Audio setup error:', error);
+      console.log('audio setup error:', error);
     }
   };
 
@@ -62,7 +62,7 @@ export default function App() {
         setThoughts(JSON.parse(savedThoughts));
       }
     } catch (error) {
-      console.log('Error loading thoughts:', error);
+      console.log('error loading thoughts:', error);
     }
   };
 
@@ -70,7 +70,7 @@ export default function App() {
     try {
       await AsyncStorage.setItem('thoughts', JSON.stringify(newThoughts));
     } catch (error) {
-      console.log('Error saving thoughts:', error);
+      console.log('error saving thoughts:', error);
     }
   };
 
@@ -82,7 +82,7 @@ export default function App() {
       setRecording(recording);
       setIsRecording(true);
     } catch (error) {
-      console.log('Error starting recording:', error);
+      console.log('error starting recording:', error);
     }
   };
 
@@ -102,9 +102,9 @@ export default function App() {
         timestamp: new Date().toISOString(),
       };
       
-      setCurrentThought(prev => prev + '\n🎙️ [Voice Note] ' + voiceNote.duration);
+      setCurrentThought(prev => prev + '\n🎙️ [voice note] ' + voiceNote.duration);
     } catch (error) {
-      console.log('Error stopping recording:', error);
+      console.log('error stopping recording:', error);
     }
   };
 
@@ -152,7 +152,7 @@ export default function App() {
         
         {thought.drawing && thought.drawing.length > 0 && (
           <View style={styles.drawingContainer}>
-            <Text style={styles.drawingLabel}>🖍️ Drawing</Text>
+            <Text style={styles.drawingLabel}>🖍️ drawing</Text>
             <View style={styles.drawingPreview}>
               <Svg width="100%" height={100}>
                 {thought.drawing.map((path, index) => (
@@ -178,7 +178,7 @@ export default function App() {
       
       {/* Header */}
       <View style={styles.header}>
-        <Text style={styles.title}>🧠 Thoughts</Text>
+        <Text style={styles.title}>🧠 thoughts</Text>
       </View>
 
       {/* Main Content */}
@@ -190,7 +190,7 @@ export default function App() {
       <View style={styles.inputContainer}>
         <TextInput
           style={styles.textInput}
-          placeholder="✍️ Start typing your thought..."
+          placeholder="✍️ start typing your thought..."
           value={currentThought}
           onChangeText={setCurrentThought}
           multiline
@@ -255,12 +255,12 @@ export default function App() {
         {isDrawing && (
           <View style={styles.drawingCanvas}>
             <View style={styles.drawingHeader}>
-              <Text style={styles.drawingTitle}>🖍️ Draw your thought</Text>
+              <Text style={styles.drawingTitle}>🖍️ draw your thought</Text>
               <TouchableOpacity
                 style={styles.clearButton}
                 onPress={() => setCurrentDrawing([])}
               >
-                <Text style={styles.clearButtonText}>Clear</Text>
+                <Text style={styles.clearButtonText}>clear</Text>
               </TouchableOpacity>
             </View>
             <DrawingCanvas
