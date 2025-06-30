@@ -1,3 +1,7 @@
+// this is the main app file for the notes app
+// here you can type, draw, record voice, and add a mood to your note
+// all your notes show up in a stream, newest first
+
 import React, { useState, useEffect } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { 
@@ -17,18 +21,30 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import DrawingCanvas from './components/DrawingCanvas';
 import Svg, { Path } from 'react-native-svg';
 
+// get the width and height of the screen
 const { width, height } = Dimensions.get('window');
 
+// this is the main app function
 export default function App() {
+  // these are all the things we keep track of
+  // thoughts is the list of all notes
   const [thoughts, setThoughts] = useState([]);
+  // currentThought is what you are typing right now
   const [currentThought, setCurrentThought] = useState('');
+  // recording is the audio object when you are recording
   const [recording, setRecording] = useState(null);
+  // isRecording is true when you are recording
   const [isRecording, setIsRecording] = useState(false);
+  // currentDrawing is the drawing you are making right now
   const [currentDrawing, setCurrentDrawing] = useState([]);
+  // isDrawing is true when the drawing area is open
   const [isDrawing, setIsDrawing] = useState(false);
+  // currentMood is the mood you picked for this note
   const [currentMood, setCurrentMood] = useState(null);
+  // showMoodPicker is true when the mood picker is open
   const [showMoodPicker, setShowMoodPicker] = useState(false);
 
+  // these are the moods you can pick for your note
   const moods = [
     { emoji: '😊', name: 'happy', color: '#FFE5B4' },
     { emoji: '😢', name: 'sad', color: '#E3F2FD' },
@@ -38,11 +54,13 @@ export default function App() {
     { emoji: '😤', name: 'frustrated', color: '#FFF3E0' },
   ];
 
+  // this runs once when the app starts
   useEffect(() => {
-    loadThoughts();
-    setupAudio();
+    loadThoughts(); // get saved notes from storage
+    setupAudio(); // ask for permission to use the mic
   }, []);
 
+  // this asks for audio permissions so you can record
   const setupAudio = async () => {
     try {
       await Audio.requestPermissionsAsync();
@@ -55,6 +73,7 @@ export default function App() {
     }
   };
 
+  // this loads your notes from your phone storage
   const loadThoughts = async () => {
     try {
       const savedThoughts = await AsyncStorage.getItem('thoughts');
@@ -66,6 +85,7 @@ export default function App() {
     }
   };
 
+  // this saves your notes to your phone storage
   const saveThoughts = async (newThoughts) => {
     try {
       await AsyncStorage.setItem('thoughts', JSON.stringify(newThoughts));
@@ -74,6 +94,7 @@ export default function App() {
     }
   };
 
+  // this starts recording your voice
   const startRecording = async () => {
     try {
       const { recording } = await Audio.Recording.createAsync(
@@ -86,57 +107,58 @@ export default function App() {
     }
   };
 
+  // this stops recording and adds a voice note to your text
   const stopRecording = async () => {
     if (!recording) return;
-
     try {
       await recording.stopAndUnloadAsync();
       const uri = recording.getURI();
       setRecording(null);
       setIsRecording(false);
-      
-      // Add voice note to current thought
+      // right now, we just add a placeholder for the voice note
       const voiceNote = {
         uri,
-        duration: '0:00', // You can calculate actual duration
+        duration: '0:00', // you can add real duration if you want
         timestamp: new Date().toISOString(),
       };
-      
       setCurrentThought(prev => prev + '\n🎙️ [voice note] ' + voiceNote.duration);
     } catch (error) {
       console.log('error stopping recording:', error);
     }
   };
 
+  // this adds your note to the stream
   const addThought = () => {
-    // Always add the note, even if drawing canvas is open
+    // only add if you typed, drew, or picked a mood
     if (!currentThought.trim() && currentDrawing.length === 0 && !currentMood) {
       return;
     }
-
+    // make a new note object with all the info
     const newThought = {
-      id: Date.now().toString(),
-      text: currentThought,
-      drawing: currentDrawing,
-      mood: currentMood,
-      timestamp: new Date().toISOString(),
-      voiceNotes: [], // Will store voice note URIs
+      id: Date.now().toString(), // unique id
+      text: currentThought, // what you typed
+      drawing: currentDrawing, // what you drew
+      mood: currentMood, // mood you picked
+      timestamp: new Date().toISOString(), // when you made it
+      voiceNotes: [], // not used yet
     };
-
+    // add the new note to the top of the list
     const updatedThoughts = [newThought, ...thoughts];
     setThoughts(updatedThoughts);
     saveThoughts(updatedThoughts);
-    
-    // Reset all input states and close drawing canvas
+    // clear all the input fields for the next note
     setCurrentThought('');
     setCurrentDrawing([]);
     setCurrentMood(null);
     setIsDrawing(false);
   };
 
+  // this shows each note in the list
+  // it shows the time, mood, text, and drawing if there is one
   const renderThought = (thought) => {
     return (
-      <View key={thought.id} style={[styles.thoughtCard, thought.mood && { backgroundColor: thought.mood.color }]}>
+      <View key={thought.id} style={[styles.thoughtCard, thought.mood && { backgroundColor: thought.mood.color }]}> 
+        {/* note header with time and mood */}
         <View style={styles.thoughtHeader}>
           <Text style={styles.timestamp}>
             {new Date(thought.timestamp).toLocaleString()}
@@ -145,11 +167,11 @@ export default function App() {
             <Text style={styles.moodEmoji}>{thought.mood.emoji}</Text>
           )}
         </View>
-        
+        {/* note text if you typed something */}
         {thought.text && (
           <Text style={styles.thoughtText}>{thought.text}</Text>
         )}
-        
+        {/* note drawing if you drew something */}
         {thought.drawing && thought.drawing.length > 0 && (
           <View style={styles.drawingContainer}>
             <Text style={styles.drawingLabel}>🖍️ drawing</Text>
@@ -172,22 +194,22 @@ export default function App() {
     );
   };
 
+  // this is the main user interface
+  // at the top is the title, then the list of notes, then the input area
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar style="auto" />
-      
-      {/* Header */}
+      {/* app title at the top */}
       <View style={styles.header}>
         <Text style={styles.title}>🧠 thoughts</Text>
       </View>
-
-      {/* Main Content */}
+      {/* list of all your notes, newest first */}
       <ScrollView style={styles.thoughtsList}>
         {thoughts.map(renderThought)}
       </ScrollView>
-
-      {/* Input Area */}
+      {/* input area for making a new note */}
       <View style={styles.inputContainer}>
+        {/* text box for typing your thought */}
         <TextInput
           style={styles.textInput}
           placeholder="✍️ start typing your thought..."
@@ -196,9 +218,9 @@ export default function App() {
           multiline
           textAlignVertical="top"
         />
-        
-        {/* Action Buttons */}
+        {/* row of action buttons: record, draw, mood, add */}
         <View style={styles.actionButtons}>
+          {/* mic button for recording voice */}
           <TouchableOpacity
             style={[styles.actionButton, isRecording && styles.recordingButton]}
             onPress={isRecording ? stopRecording : startRecording}
@@ -207,21 +229,21 @@ export default function App() {
               {isRecording ? '⏹️' : '🎙️'}
             </Text>
           </TouchableOpacity>
-
+          {/* pen button for drawing */}
           <TouchableOpacity
             style={[styles.actionButton, isDrawing && styles.drawingButton]}
             onPress={() => setIsDrawing(!isDrawing)}
           >
             <Text style={styles.actionButtonText}>🖍️</Text>
           </TouchableOpacity>
-
+          {/* smiley button for picking a mood */}
           <TouchableOpacity
             style={styles.actionButton}
             onPress={() => setShowMoodPicker(!showMoodPicker)}
           >
             <Text style={styles.actionButtonText}>😊</Text>
           </TouchableOpacity>
-
+          {/* plus button to add the note */}
           <TouchableOpacity
             style={styles.addButton}
             onPress={addThought}
@@ -229,8 +251,7 @@ export default function App() {
             <Text style={styles.addButtonText}>+</Text>
           </TouchableOpacity>
         </View>
-
-        {/* Mood Picker */}
+        {/* mood picker shows up when you tap the smiley */}
         {showMoodPicker && (
           <View style={styles.moodPicker}>
             {moods.map((mood) => (
@@ -250,12 +271,12 @@ export default function App() {
             ))}
           </View>
         )}
-
-        {/* Drawing Canvas */}
+        {/* drawing area shows up when you tap the pen */}
         {isDrawing && (
           <View style={styles.drawingCanvas}>
             <View style={styles.drawingHeader}>
               <Text style={styles.drawingTitle}>🖍️ draw your thought</Text>
+              {/* clear button to erase your drawing */}
               <TouchableOpacity
                 style={styles.clearButton}
                 onPress={() => setCurrentDrawing([])}
@@ -263,6 +284,7 @@ export default function App() {
                 <Text style={styles.clearButtonText}>clear</Text>
               </TouchableOpacity>
             </View>
+            {/* this is the actual drawing canvas */}
             <DrawingCanvas
               onDrawingChange={setCurrentDrawing}
               style={styles.canvas}
@@ -274,6 +296,8 @@ export default function App() {
   );
 }
 
+// these are all the styles for the app
+// they make everything look nice and spaced out
 const styles = StyleSheet.create({
   container: {
     flex: 1,
