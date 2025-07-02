@@ -1,8 +1,8 @@
-// this is the main app file for the notes app
-// here you can type, draw, record voice, and add a mood to your note
-// all your notes show up in a stream, newest first
+// this is the main app file for the notebook-style notes app
+// you can type, draw, record audio, and add mood on each page
+// only one page is visible at a time, like a real notebook
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { 
   StyleSheet, 
@@ -10,41 +10,37 @@ import {
   View, 
   TextInput, 
   TouchableOpacity, 
-  ScrollView, 
-  Alert,
   Dimensions,
-  SafeAreaView
+  SafeAreaView,
+  PanResponder,
+  Animated
 } from 'react-native';
 import { Audio } from 'expo-av';
-import * as FileSystem from 'expo-file-system';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import DrawingCanvas from './components/DrawingCanvas';
 import Svg, { Path } from 'react-native-svg';
+// import a handwritten font from google fonts or expo-font if available
+// for now, we'll use the default font and add a comment for future font
 
-// get the width and height of the screen
 const { width, height } = Dimensions.get('window');
 
-// this is the main app function
 export default function App() {
-  // these are all the things we keep track of
-  // thoughts is the list of all notes
+  // all notes/pages
   const [thoughts, setThoughts] = useState([]);
-  // currentThought is what you are typing right now
+  // which page are we on?
+  const [currentPage, setCurrentPage] = useState(0);
+  // input states for the current page
   const [currentThought, setCurrentThought] = useState('');
-  // recording is the audio object when you are recording
-  const [recording, setRecording] = useState(null);
-  // isRecording is true when you are recording
-  const [isRecording, setIsRecording] = useState(false);
-  // currentDrawing is the drawing you are making right now
   const [currentDrawing, setCurrentDrawing] = useState([]);
-  // isDrawing is true when the drawing area is open
-  const [isDrawing, setIsDrawing] = useState(false);
-  // currentMood is the mood you picked for this note
   const [currentMood, setCurrentMood] = useState(null);
-  // showMoodPicker is true when the mood picker is open
+  const [recording, setRecording] = useState(null);
+  const [isRecording, setIsRecording] = useState(false);
   const [showMoodPicker, setShowMoodPicker] = useState(false);
+  const [bookmarks, setBookmarks] = useState([]); // list of bookmarked page indices
+  // for swipe gesture
+  const pan = useRef(new Animated.Value(0)).current;
 
-  // these are the moods you can pick for your note
+  // moods to pick from
   const moods = [
     { emoji: '😊', name: 'happy', color: '#FFE5B4' },
     { emoji: '😢', name: 'sad', color: '#E3F2FD' },
@@ -54,13 +50,27 @@ export default function App() {
     { emoji: '😤', name: 'frustrated', color: '#FFF3E0' },
   ];
 
-  // this runs once when the app starts
+  // load notes and bookmarks on start
   useEffect(() => {
-    loadThoughts(); // get saved notes from storage
-    setupAudio(); // ask for permission to use the mic
+    loadThoughts();
+    loadBookmarks();
+    setupAudio();
   }, []);
 
-  // this asks for audio permissions so you can record
+  // update input fields when page changes
+  useEffect(() => {
+    if (thoughts.length > 0 && currentPage >= 0 && currentPage < thoughts.length) {
+      setCurrentThought(thoughts[currentPage].text || '');
+      setCurrentDrawing(thoughts[currentPage].drawing || []);
+      setCurrentMood(thoughts[currentPage].mood || null);
+    } else {
+      setCurrentThought('');
+      setCurrentDrawing([]);
+      setCurrentMood(null);
+    }
+  }, [currentPage, thoughts]);
+
+  // audio setup
   const setupAudio = async () => {
     try {
       await Audio.requestPermissionsAsync();
@@ -73,19 +83,22 @@ export default function App() {
     }
   };
 
-  // this loads your notes from your phone storage
+  // load notes from storage
   const loadThoughts = async () => {
     try {
       const savedThoughts = await AsyncStorage.getItem('thoughts');
       if (savedThoughts) {
         setThoughts(JSON.parse(savedThoughts));
+      } else {
+        // start with one blank page
+        setThoughts([{ text: '', drawing: [], mood: null, timestamp: new Date().toISOString(), voiceNotes: [] }]);
       }
     } catch (error) {
       console.log('error loading thoughts:', error);
     }
   };
 
-  // this saves your notes to your phone storage
+  // save notes to storage
   const saveThoughts = async (newThoughts) => {
     try {
       await AsyncStorage.setItem('thoughts', JSON.stringify(newThoughts));
@@ -94,7 +107,26 @@ export default function App() {
     }
   };
 
-  // this starts recording your voice
+  // load bookmarks from storage
+  const loadBookmarks = async () => {
+    try {
+      const saved = await AsyncStorage.getItem('bookmarks');
+      if (saved) setBookmarks(JSON.parse(saved));
+    } catch (error) {
+      console.log('error loading bookmarks:', error);
+    }
+  };
+
+  // save bookmarks to storage
+  const saveBookmarks = async (newBookmarks) => {
+    try {
+      await AsyncStorage.setItem('bookmarks', JSON.stringify(newBookmarks));
+    } catch (error) {
+      console.log('error saving bookmarks:', error);
+    }
+  };
+
+  // start recording audio
   const startRecording = async () => {
     try {
       const { recording } = await Audio.Recording.createAsync(
@@ -107,7 +139,7 @@ export default function App() {
     }
   };
 
-  // this stops recording and adds a voice note to your text
+  // stop recording and add to current note
   const stopRecording = async () => {
     if (!recording) return;
     try {
@@ -115,189 +147,177 @@ export default function App() {
       const uri = recording.getURI();
       setRecording(null);
       setIsRecording(false);
-      // right now, we just add a placeholder for the voice note
-      const voiceNote = {
-        uri,
-        duration: '0:00', // you can add real duration if you want
-        timestamp: new Date().toISOString(),
-      };
-      setCurrentThought(prev => prev + '\n🎙️ [voice note] ' + voiceNote.duration);
+      // add voice note info to current page (not shown in ui yet)
+      const updatedThoughts = [...thoughts];
+      if (!updatedThoughts[currentPage].voiceNotes) updatedThoughts[currentPage].voiceNotes = [];
+      updatedThoughts[currentPage].voiceNotes.push({ uri, timestamp: new Date().toISOString() });
+      setThoughts(updatedThoughts);
+      saveThoughts(updatedThoughts);
+      setCurrentThought(prev => prev + '\n🎙️ [voice note]');
     } catch (error) {
       console.log('error stopping recording:', error);
     }
   };
 
-  // this adds your note to the stream
-  const addThought = () => {
-    // only add if you typed, drew, or picked a mood
-    if (!currentThought.trim() && currentDrawing.length === 0 && !currentMood) {
-      return;
-    }
-    // make a new note object with all the info
-    const newThought = {
-      id: Date.now().toString(), // unique id
-      text: currentThought, // what you typed
-      drawing: currentDrawing, // what you drew
-      mood: currentMood, // mood you picked
-      timestamp: new Date().toISOString(), // when you made it
-      voiceNotes: [], // not used yet
+  // save changes to the current page
+  const saveCurrentPage = (newFields) => {
+    const updatedThoughts = [...thoughts];
+    updatedThoughts[currentPage] = {
+      ...updatedThoughts[currentPage],
+      ...newFields,
+      timestamp: new Date().toISOString(),
     };
-    // add the new note to the top of the list
-    const updatedThoughts = [newThought, ...thoughts];
     setThoughts(updatedThoughts);
     saveThoughts(updatedThoughts);
-    // clear all the input fields for the next note
-    setCurrentThought('');
-    setCurrentDrawing([]);
-    setCurrentMood(null);
-    setIsDrawing(false);
   };
 
-  // this shows each note in the list
-  // it shows the time, mood, text, and drawing if there is one
-  const renderThought = (thought) => {
-    return (
-      <View key={thought.id} style={[styles.thoughtCard, thought.mood && { backgroundColor: thought.mood.color }]}> 
-        {/* note header with time and mood */}
-        <View style={styles.thoughtHeader}>
-          <Text style={styles.timestamp}>
-            {new Date(thought.timestamp).toLocaleString()}
-          </Text>
-          {thought.mood && (
-            <Text style={styles.moodEmoji}>{thought.mood.emoji}</Text>
-          )}
-        </View>
-        {/* note text if you typed something */}
-        {thought.text && (
-          <Text style={styles.thoughtText}>{thought.text}</Text>
-        )}
-        {/* note drawing if you drew something */}
-        {thought.drawing && thought.drawing.length > 0 && (
-          <View style={styles.drawingContainer}>
-            <Text style={styles.drawingLabel}>🖍️ drawing</Text>
-            <View style={styles.drawingPreview}>
-              <Svg width="100%" height={100}>
-                {thought.drawing.map((path, index) => (
-                  <Path
-                    key={index}
-                    d={path}
-                    stroke="#000"
-                    strokeWidth={1.5}
-                    fill="none"
-                  />
-                ))}
-              </Svg>
-            </View>
-          </View>
-        )}
-      </View>
-    );
+  // add a new blank page after the current one
+  const addPage = () => {
+    const newPage = { text: '', drawing: [], mood: null, timestamp: new Date().toISOString(), voiceNotes: [] };
+    const updatedThoughts = [...thoughts];
+    updatedThoughts.splice(currentPage + 1, 0, newPage);
+    setThoughts(updatedThoughts);
+    saveThoughts(updatedThoughts);
+    setCurrentPage(currentPage + 1);
   };
 
-  // this is the main user interface
-  // at the top is the title, then the list of notes, then the input area
+  // go to previous page
+  const goToPrevPage = () => {
+    if (currentPage > 0) setCurrentPage(currentPage - 1);
+  };
+
+  // go to next page
+  const goToNextPage = () => {
+    if (currentPage < thoughts.length - 1) setCurrentPage(currentPage + 1);
+  };
+
+  // toggle bookmark for this page
+  const toggleBookmark = () => {
+    let updated = [...bookmarks];
+    if (updated.includes(currentPage)) {
+      updated = updated.filter(idx => idx !== currentPage);
+    } else {
+      updated.push(currentPage);
+    }
+    setBookmarks(updated);
+    saveBookmarks(updated);
+  };
+
+  // swipe gesture for flipping pages
+  const panResponder = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_, gestureState) => Math.abs(gestureState.dx) > 20,
+      onPanResponderRelease: (_, gestureState) => {
+        if (gestureState.dx > 50) {
+          goToPrevPage();
+        } else if (gestureState.dx < -50) {
+          goToNextPage();
+        }
+      },
+    })
+  ).current;
+
+  // notebook background style (lined paper look)
+  // for now, use a light color and lines; can be replaced with an image
+  const notebookBackground = {
+    backgroundColor: '#fdf6e3',
+    borderWidth: 1,
+    borderColor: '#e0cfa9',
+    borderRadius: 12,
+    padding: 16,
+    margin: 8,
+    minHeight: 350,
+    justifyContent: 'flex-start',
+    // fontFamily: 'handwritten-font', // add a real font if available
+  };
+
+  // main ui
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar style="auto" />
-      {/* app title at the top */}
+      {/* search bar placeholder (to be implemented) */}
       <View style={styles.header}>
-        <Text style={styles.title}>🧠 thoughts</Text>
+        <Text style={styles.title}>notebook</Text>
       </View>
-      {/* list of all your notes, newest first */}
-      <ScrollView style={styles.thoughtsList}>
-        {thoughts.map(renderThought)}
-      </ScrollView>
-      {/* input area for making a new note */}
-      <View style={styles.inputContainer}>
-        {/* text box for typing your thought */}
-        <TextInput
-          style={styles.textInput}
-          placeholder="✍️ start typing your thought..."
-          value={currentThought}
-          onChangeText={setCurrentThought}
-          multiline
-          textAlignVertical="top"
-        />
-        {/* row of action buttons: record, draw, mood, add */}
-        <View style={styles.actionButtons}>
-          {/* mic button for recording voice */}
-          <TouchableOpacity
-            style={[styles.actionButton, isRecording && styles.recordingButton]}
-            onPress={isRecording ? stopRecording : startRecording}
-          >
-            <Text style={styles.actionButtonText}>
-              {isRecording ? '⏹️' : '🎙️'}
-            </Text>
+      {/* notebook page area */}
+      <View style={styles.pageContainer} {...panResponder.panHandlers}>
+        {/* left arrow */}
+        <TouchableOpacity onPress={goToPrevPage} disabled={currentPage === 0} style={styles.arrowButton}>
+          <Text style={[styles.arrow, currentPage === 0 && styles.arrowDisabled]}>←</Text>
+        </TouchableOpacity>
+        {/* notebook page */}
+        <View style={[styles.page, notebookBackground]}>
+          {/* bookmark icon */}
+          <TouchableOpacity onPress={toggleBookmark} style={styles.bookmarkButton}>
+            <Text style={styles.bookmark}>{bookmarks.includes(currentPage) ? '🔖' : '📄'}</Text>
           </TouchableOpacity>
-          {/* pen button for drawing */}
-          <TouchableOpacity
-            style={[styles.actionButton, isDrawing && styles.drawingButton]}
-            onPress={() => setIsDrawing(!isDrawing)}
-          >
-            <Text style={styles.actionButtonText}>🖍️</Text>
+          {/* mood picker */}
+          <TouchableOpacity onPress={() => setShowMoodPicker(!showMoodPicker)} style={styles.moodButton}>
+            <Text style={styles.mood}>{currentMood ? currentMood.emoji : '😊'}</Text>
           </TouchableOpacity>
-          {/* smiley button for picking a mood */}
-          <TouchableOpacity
-            style={styles.actionButton}
-            onPress={() => setShowMoodPicker(!showMoodPicker)}
-          >
-            <Text style={styles.actionButtonText}>😊</Text>
-          </TouchableOpacity>
-          {/* plus button to add the note */}
-          <TouchableOpacity
-            style={styles.addButton}
-            onPress={addThought}
-          >
-            <Text style={styles.addButtonText}>+</Text>
-          </TouchableOpacity>
-        </View>
-        {/* mood picker shows up when you tap the smiley */}
-        {showMoodPicker && (
-          <View style={styles.moodPicker}>
-            {moods.map((mood) => (
-              <TouchableOpacity
-                key={mood.name}
-                style={[
-                  styles.moodOption,
-                  currentMood?.name === mood.name && styles.selectedMood
-                ]}
-                onPress={() => {
-                  setCurrentMood(mood);
-                  setShowMoodPicker(false);
-                }}
-              >
-                <Text style={styles.moodOptionText}>{mood.emoji}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        )}
-        {/* drawing area shows up when you tap the pen */}
-        {isDrawing && (
-          <View style={styles.drawingCanvas}>
-            <View style={styles.drawingHeader}>
-              <Text style={styles.drawingTitle}>🖍️ draw your thought</Text>
-              {/* clear button to erase your drawing */}
-              <TouchableOpacity
-                style={styles.clearButton}
-                onPress={() => setCurrentDrawing([])}
-              >
-                <Text style={styles.clearButtonText}>clear</Text>
-              </TouchableOpacity>
+          {showMoodPicker && (
+            <View style={styles.moodPicker}>
+              {moods.map((mood) => (
+                <TouchableOpacity
+                  key={mood.name}
+                  style={styles.moodOption}
+                  onPress={() => {
+                    setCurrentMood(mood);
+                    saveCurrentPage({ mood });
+                    setShowMoodPicker(false);
+                  }}
+                >
+                  <Text style={styles.moodOptionText}>{mood.emoji}</Text>
+                </TouchableOpacity>
+              ))}
             </View>
-            {/* this is the actual drawing canvas */}
+          )}
+          {/* text input for the note */}
+          <TextInput
+            style={[styles.textInput, { fontFamily: 'Courier', fontSize: 18 }]}
+            placeholder="write your thought..."
+            value={currentThought}
+            onChangeText={text => {
+              setCurrentThought(text);
+              saveCurrentPage({ text });
+            }}
+            multiline
+            textAlignVertical="top"
+          />
+          {/* drawing area */}
+          <View style={styles.drawingArea}>
             <DrawingCanvas
-              onDrawingChange={setCurrentDrawing}
-              style={styles.canvas}
+              onDrawingChange={drawing => {
+                setCurrentDrawing(drawing);
+                saveCurrentPage({ drawing });
+              }}
+              style={{ height: 120, backgroundColor: '#fffbe6', borderRadius: 8, borderWidth: 1, borderColor: '#e0cfa9' }}
             />
           </View>
-        )}
+          {/* audio record button */}
+          <TouchableOpacity
+            style={[styles.audioButton, isRecording && styles.audioButtonActive]}
+            onPress={isRecording ? stopRecording : startRecording}
+          >
+            <Text style={styles.audioButtonText}>{isRecording ? '⏹️ stop' : '🎙️ record'}</Text>
+          </TouchableOpacity>
+        </View>
+        {/* right arrow */}
+        <TouchableOpacity onPress={goToNextPage} disabled={currentPage === thoughts.length - 1} style={styles.arrowButton}>
+          <Text style={[styles.arrow, currentPage === thoughts.length - 1 && styles.arrowDisabled]}>→</Text>
+        </TouchableOpacity>
+      </View>
+      {/* page number and add page button */}
+      <View style={styles.pageFooter}>
+        <Text style={styles.pageNumber}>page {currentPage + 1}</Text>
+        <TouchableOpacity onPress={addPage} style={styles.addPageButton}>
+          <Text style={styles.addPageText}>+ add page</Text>
+        </TouchableOpacity>
       </View>
     </SafeAreaView>
   );
 }
 
-// these are all the styles for the app
-// they make everything look nice and spaced out
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -309,171 +329,118 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     borderBottomWidth: 1,
     borderBottomColor: '#e9ecef',
+    alignItems: 'center',
   },
   title: {
     fontSize: 28,
     fontWeight: 'bold',
     color: '#212529',
+    fontFamily: 'Courier', // use a handwritten font if available
   },
-  thoughtsList: {
+  pageContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
     flex: 1,
-    padding: 15,
-  },
-  thoughtCard: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  thoughtHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  timestamp: {
-    fontSize: 12,
-    color: '#6c757d',
-  },
-  moodEmoji: {
-    fontSize: 20,
-  },
-  thoughtText: {
-    fontSize: 16,
-    lineHeight: 24,
-    color: '#212529',
-    marginBottom: 8,
-  },
-  drawingContainer: {
-    marginTop: 8,
-  },
-  drawingLabel: {
-    fontSize: 14,
-    color: '#6c757d',
-    marginBottom: 4,
-  },
-  drawingPreview: {
-    backgroundColor: '#f8f9fa',
-    borderRadius: 8,
-    padding: 12,
-    alignItems: 'center',
-  },
-  drawingText: {
-    color: '#6c757d',
-    fontStyle: 'italic',
-  },
-  inputContainer: {
-    backgroundColor: '#fff',
-    padding: 15,
-    borderTopWidth: 1,
-    borderTopColor: '#e9ecef',
-  },
-  textInput: {
-    borderWidth: 1,
-    borderColor: '#dee2e6',
-    borderRadius: 12,
-    padding: 12,
-    fontSize: 16,
-    minHeight: 80,
-    marginBottom: 12,
-  },
-  actionButtons: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  actionButton: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    backgroundColor: '#e9ecef',
     justifyContent: 'center',
-    alignItems: 'center',
   },
-  recordingButton: {
-    backgroundColor: '#dc3545',
+  page: {
+    flex: 1,
+    minHeight: 350,
+    marginHorizontal: 8,
+    justifyContent: 'flex-start',
+    position: 'relative',
   },
-  drawingButton: {
-    backgroundColor: '#007bff',
+  arrowButton: {
+    padding: 10,
   },
-  actionButtonText: {
-    fontSize: 20,
+  arrow: {
+    fontSize: 32,
+    color: '#bfa76a',
   },
-  addButton: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    backgroundColor: '#28a745',
-    justifyContent: 'center',
-    alignItems: 'center',
+  arrowDisabled: {
+    color: '#e0cfa9',
   },
-  addButtonText: {
+  bookmarkButton: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    zIndex: 2,
+  },
+  bookmark: {
     fontSize: 24,
-    color: '#fff',
-    fontWeight: 'bold',
+  },
+  moodButton: {
+    position: 'absolute',
+    top: 8,
+    left: 8,
+    zIndex: 2,
+  },
+  mood: {
+    fontSize: 24,
   },
   moodPicker: {
     flexDirection: 'row',
-    justifyContent: 'space-around',
-    paddingVertical: 12,
-    backgroundColor: '#f8f9fa',
-    borderRadius: 12,
-    marginBottom: 12,
+    marginVertical: 8,
+    backgroundColor: '#fffbe6',
+    borderRadius: 8,
+    padding: 6,
+    alignSelf: 'flex-start',
   },
   moodOption: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#fff',
-  },
-  selectedMood: {
-    backgroundColor: '#007bff',
+    marginHorizontal: 4,
   },
   moodOptionText: {
-    fontSize: 20,
+    fontSize: 22,
   },
-  drawingCanvas: {
-    height: 250,
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#dee2e6',
-    marginBottom: 12,
-    overflow: 'hidden',
+  textInput: {
+    minHeight: 100,
+    marginTop: 40,
+    marginBottom: 8,
+    backgroundColor: 'transparent',
+    borderBottomWidth: 1,
+    borderColor: '#e0cfa9',
+    padding: 8,
   },
-  drawingHeader: {
+  drawingArea: {
+    marginVertical: 8,
+  },
+  audioButton: {
+    marginTop: 8,
+    alignSelf: 'flex-end',
+    backgroundColor: '#f5e6c8',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  audioButtonActive: {
+    backgroundColor: '#f7b267',
+  },
+  audioButtonText: {
+    fontSize: 16,
+  },
+  pageFooter: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#dee2e6',
+    padding: 16,
+    backgroundColor: '#fff',
+    borderTopWidth: 1,
+    borderTopColor: '#e9ecef',
   },
-  drawingTitle: {
+  pageNumber: {
     fontSize: 16,
-    fontWeight: '600',
-    color: '#212529',
+    color: '#bfa76a',
+    fontFamily: 'Courier',
   },
-  clearButton: {
+  addPageButton: {
+    backgroundColor: '#f5e6c8',
+    borderRadius: 8,
     paddingHorizontal: 12,
     paddingVertical: 6,
-    backgroundColor: '#dc3545',
-    borderRadius: 6,
   },
-  clearButtonText: {
-    color: '#fff',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  canvas: {
-    flex: 1,
+  addPageText: {
+    fontSize: 16,
+    color: '#bfa76a',
+    fontWeight: 'bold',
   },
 });
