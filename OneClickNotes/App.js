@@ -157,7 +157,7 @@ export default function App() {
   // it shows the time, mood, text, and drawing if there is one
   const renderThought = (thought) => {
     return (
-      <View key={thought.id} style={[styles.thoughtCard, thought.mood && { backgroundColor: thought.mood.color }]}> 
+      <View key={thought.key} style={[styles.thoughtCard, thought.mood && { backgroundColor: thought.mood.color }]}> 
         {/* note header with time and mood */}
         <View style={styles.thoughtHeader}>
           <Text style={styles.timestamp}>
@@ -205,7 +205,7 @@ export default function App() {
       </View>
       {/* list of all your notes, newest first */}
       <ScrollView style={styles.thoughtsList}>
-        {thoughts.map(renderThought)}
+        {thoughts.map((thought, idx) => renderThought({ ...thought, key: thought.id || idx }))}
       </ScrollView>
       {/* input area for making a new note */}
       <View style={styles.inputContainer}>
