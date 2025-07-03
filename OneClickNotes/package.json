@@ -20,7 +20,9 @@
     "react": "19.0.0",
     "react-native": "0.79.4",
     "react-native-gesture-handler": "~2.24.0",
-    "react-native-svg": "15.11.2"
+    "react-native-keyboard-aware-scroll-view": "^0.9.5",
+    "react-native-svg": "15.11.2",
+    "react-native-view-shot": "^4.0.3"
   },
   "devDependencies": {
     "@babel/core": "^7.20.0"
