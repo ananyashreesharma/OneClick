@@ -18,7 +18,9 @@ import {
   KeyboardAvoidingView,
   Keyboard,
   TouchableWithoutFeedback,
-  Image
+  Image,
+  FlatList,
+  Animated
 } from 'react-native';
 import { Audio } from 'expo-av';
 import * as FileSystem from 'expo-file-system';
@@ -26,6 +28,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import DrawingCanvas from './components/DrawingCanvas';
 import Svg, { Path } from 'react-native-svg';
 import { captureRef } from 'react-native-view-shot';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
 
 // get the width and height of the screen
 const { width, height } = Dimensions.get('window');
@@ -33,6 +36,9 @@ const { width, height } = Dimensions.get('window');
 // Define a constant for the drawing canvas size
 const DRAWING_CANVAS_WIDTH = Dimensions.get('window').width - 60;
 const DRAWING_CANVAS_HEIGHT = 200;
+// Add constants for fullscreen canvas size
+const FULLSCREEN_CANVAS_WIDTH = Dimensions.get('window').width;
+const FULLSCREEN_CANVAS_HEIGHT = Dimensions.get('window').height - (Platform.OS === 'ios' ? 90 : 60);
 
 // this is the main app function
 export default function App() {
@@ -57,6 +63,24 @@ export default function App() {
   const svgCaptureRef = useRef();
   // State to hold the PNG URI
   const [drawingImageUri, setDrawingImageUri] = useState(null);
+  // Add state for fullscreen drawing
+  const [isDrawingFullscreen, setIsDrawingFullscreen] = useState(false);
+  // Add state to track expanded notes
+  const [expandedNotes, setExpandedNotes] = useState({});
+  // Add state for floating date label
+  const [floatingDate, setFloatingDate] = useState('');
+  const [showFloatingDate, setShowFloatingDate] = useState(false);
+  const floatingDateOpacity = useRef(new Animated.Value(0)).current;
+  const floatingDateTimeout = useRef(null);
+  // Add state for currently playing sound
+  const [playingSound, setPlayingSound] = useState(null);
+  const [playingNoteId, setPlayingNoteId] = useState(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  // Add state for current voice note drafts
+  const [voiceNoteDrafts, setVoiceNoteDrafts] = useState([]);
+  // Add state for recording timer
+  const [recordingDuration, setRecordingDuration] = useState(0);
+  const recordingInterval = useRef(null);
 
   // these are the moods you can pick for your note
   const moods = [
@@ -130,23 +154,66 @@ export default function App() {
     }
   };
 
-  // this stops recording and adds a voice note to your text
+  // this stops recording and adds a voice note to your note
   const stopRecording = async () => {
     if (!recording) return;
     try {
       await recording.stopAndUnloadAsync();
       const uri = recording.getURI();
+      // Get duration
+      const { sound, status } = await recording.createNewLoadedSoundAsync();
+      const duration = status.durationMillis;
       setRecording(null);
       setIsRecording(false);
-      // right now, we just add a placeholder for the voice note
-      const voiceNote = {
-        uri,
-        duration: '0:00', // you can add real duration if you want
-        timestamp: new Date().toISOString(),
-      };
-      setCurrentThought(prev => prev + '\n🎙️ [voice note] ' + voiceNote.duration);
+      // Add the new draft to the array
+      setVoiceNoteDrafts((drafts) => [
+        ...drafts,
+        { uri, duration, timestamp: new Date().toISOString(), id: Date.now().toString() },
+      ]);
     } catch (error) {
       console.log('error stopping recording:', error);
+    }
+  };
+
+  // Helper to format duration in mm:ss
+  function formatDuration(ms) {
+    const totalSeconds = Math.floor(ms / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+  }
+
+  // Play/pause audio for a note
+  const handlePlayPauseAudio = async (note) => {
+    if (playingNoteId === note.id && playingSound) {
+      if (isPlaying) {
+        await playingSound.pauseAsync();
+        setIsPlaying(false);
+      } else {
+        await playingSound.playAsync();
+        setIsPlaying(true);
+      }
+      return;
+    }
+    // Stop previous sound
+    if (playingSound) {
+      await playingSound.unloadAsync();
+      setPlayingSound(null);
+      setPlayingNoteId(null);
+      setIsPlaying(false);
+    }
+    if (note.voiceNote && note.voiceNote.uri) {
+      const { sound } = await Audio.Sound.createAsync({ uri: note.voiceNote.uri }, {}, (status) => {
+        if (status.didJustFinish) {
+          setIsPlaying(false);
+          setPlayingNoteId(null);
+          setPlayingSound(null);
+        }
+      });
+      setPlayingSound(sound);
+      setPlayingNoteId(note.id);
+      setIsPlaying(true);
+      await sound.playAsync();
     }
   };
 
@@ -155,9 +222,16 @@ export default function App() {
     setIsDrawing(false);
     const latestDrawing = drawingRef.current?.getCurrentDrawing ? drawingRef.current.getCurrentDrawing() : currentDrawing;
     let imageUri = null;
+    let drawingWidth = DRAWING_CANVAS_WIDTH;
+    let drawingHeight = DRAWING_CANVAS_HEIGHT;
     // If there is a drawing, rasterize it to PNG
     if (latestDrawing && latestDrawing.length > 0) {
       try {
+        // If in fullscreen, use fullscreen size
+        if (isDrawingFullscreen) {
+          drawingWidth = FULLSCREEN_CANVAS_WIDTH;
+          drawingHeight = FULLSCREEN_CANVAS_HEIGHT;
+        }
         imageUri = await captureRef(svgCaptureRef, {
           format: 'png',
           quality: 1,
@@ -168,12 +242,15 @@ export default function App() {
         console.log('Error capturing drawing:', e);
       }
     }
-    if (!currentThought && (!latestDrawing || latestDrawing.length === 0) && !currentMood && !imageUri) return;
+    if (!currentThought && (!latestDrawing || latestDrawing.length === 0) && !currentMood && !imageUri && voiceNoteDrafts.length === 0) return;
     const newThought = {
       text: currentThought,
       drawing: latestDrawing,
       drawingImageUri: imageUri,
+      drawingWidth,
+      drawingHeight,
       mood: currentMood,
+      voiceNotes: voiceNoteDrafts,
       id: Date.now().toString(),
       timestamp: new Date().toISOString(),
     };
@@ -184,13 +261,34 @@ export default function App() {
     setDrawingImageUri(null);
     setCurrentMood(null);
     setShowMoodPicker(false);
+    setVoiceNoteDrafts([]);
     Keyboard.dismiss();
   };
 
   // this shows each note in the list
   // it shows the time, mood, text, and drawing if there is one
+  const MAX_NOTE_PREVIEW_LENGTH = 1000;
+  const MAX_NOTE_LENGTH = 3000;
+  const MAX_NOTE_EXPANDED_LENGTH = 3000;
   const renderThought = (thought) => {
     // Show PNG image if present, else SVG drawing
+    let imageWidth = DRAWING_CANVAS_WIDTH;
+    let imageHeight = DRAWING_CANVAS_HEIGHT;
+    if (thought.drawingWidth && thought.drawingHeight) {
+      imageWidth = DRAWING_CANVAS_WIDTH;
+      imageHeight = Math.round((thought.drawingHeight / thought.drawingWidth) * DRAWING_CANVAS_WIDTH);
+    }
+    // Determine if this note is expanded
+    const isExpanded = expandedNotes[thought.id];
+    // Handle text preview and toggling
+    let displayText = thought.text;
+    let showViewMore = false;
+    if (thought.text && thought.text.length > MAX_NOTE_PREVIEW_LENGTH && !isExpanded) {
+      displayText = thought.text.slice(0, MAX_NOTE_PREVIEW_LENGTH) + '...';
+      showViewMore = true;
+    } else if (isExpanded && thought.text.length > MAX_NOTE_EXPANDED_LENGTH) {
+      displayText = thought.text.slice(0, MAX_NOTE_EXPANDED_LENGTH) + '...';
+    }
     return (
       <View key={thought.key} style={[styles.thoughtCard, thought.mood && { backgroundColor: thought.mood.color }]}> 
         {/* note header with time and mood */}
@@ -202,15 +300,40 @@ export default function App() {
             <Text style={styles.moodEmoji}>{thought.mood.emoji}</Text>
           )}
         </View>
+        {/* voice note playback if present */}
+        {thought.voiceNotes && thought.voiceNotes.length > 0 && (
+          <View style={{ marginBottom: 8 }}>
+            {thought.voiceNotes.map((vn) => (
+              <View key={vn.id} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
+                <TouchableOpacity onPress={() => handlePlayPauseAudio({ id: vn.id, voiceNote: vn })} style={{ marginRight: 8 }}>
+                  <Text style={{ fontSize: 24 }}>{playingNoteId === vn.id && isPlaying ? '⏸️' : '▶️'}</Text>
+                </TouchableOpacity>
+                <Text style={{ fontSize: 16, color: '#333' }}>{formatDuration(vn.duration || 0)}</Text>
+              </View>
+            ))}
+          </View>
+        )}
         {/* note text if you typed something */}
         {thought.text && (
-          <Text style={styles.thoughtText}>{thought.text}</Text>
+          <View>
+            <Text style={styles.thoughtText}>{displayText}</Text>
+            {showViewMore && (
+              <TouchableOpacity onPress={() => setExpandedNotes({ ...expandedNotes, [thought.id]: true })}>
+                <Text style={{ color: '#007bff', fontWeight: 'bold', marginTop: 4 }}>View more</Text>
+              </TouchableOpacity>
+            )}
+            {isExpanded && thought.text.length > MAX_NOTE_PREVIEW_LENGTH && (
+              <TouchableOpacity onPress={() => setExpandedNotes({ ...expandedNotes, [thought.id]: false })}>
+                <Text style={{ color: '#007bff', fontWeight: 'bold', marginTop: 4 }}>Show less</Text>
+              </TouchableOpacity>
+            )}
+          </View>
         )}
         {/* note drawing as PNG if present */}
         {thought.drawingImageUri && (
           <View style={styles.drawingContainer}>
             <Text style={styles.drawingLabel}>🖼️ drawing</Text>
-            <Image source={{ uri: thought.drawingImageUri }} style={{ width: DRAWING_CANVAS_WIDTH, height: DRAWING_CANVAS_HEIGHT, borderRadius: 8, backgroundColor: '#fff' }} />
+            <Image source={{ uri: thought.drawingImageUri }} style={{ width: imageWidth, height: imageHeight, borderRadius: 8, backgroundColor: '#fff' }} />
           </View>
         )}
         {/* fallback: note drawing as SVG if present and no PNG */}
@@ -218,7 +341,7 @@ export default function App() {
           <View style={styles.drawingContainer}>
             <Text style={styles.drawingLabel}>🖍️ drawing</Text>
             <View style={styles.drawingPreview}>
-              <Svg width="100%" height={100}>
+              <Svg width={imageWidth} height={imageHeight}>
                 {thought.drawing.map((path, index) => (
                   <Path
                     key={index}
@@ -260,149 +383,285 @@ export default function App() {
     };
   }, []);
 
+  // Helper to format month/year
+  function formatMonthYear(dateString) {
+    const date = new Date(dateString);
+    return date.toLocaleString('default', { month: 'long', year: 'numeric' });
+  }
+
+  // Handler for FlatList viewable items
+  const onViewableItemsChanged = useRef(({ viewableItems }) => {
+    if (viewableItems && viewableItems.length > 0) {
+      const topItem = viewableItems[0].item;
+      const label = formatMonthYear(topItem.timestamp);
+      setFloatingDate(label);
+      setShowFloatingDate(true);
+      Animated.timing(floatingDateOpacity, {
+        toValue: 1,
+        duration: 200,
+        useNativeDriver: true,
+      }).start();
+      if (floatingDateTimeout.current) clearTimeout(floatingDateTimeout.current);
+      floatingDateTimeout.current = setTimeout(() => {
+        Animated.timing(floatingDateOpacity, {
+          toValue: 0,
+          duration: 400,
+          useNativeDriver: true,
+        }).start(() => setShowFloatingDate(false));
+      }, 1200);
+    }
+  }).current;
+
+  const viewabilityConfig = { itemVisiblePercentThreshold: 10 };
+
+  // Start timer when recording starts
+  useEffect(() => {
+    if (isRecording) {
+      setRecordingDuration(0);
+      recordingInterval.current = setInterval(() => {
+        setRecordingDuration(prev => prev + 1);
+      }, 1000);
+    } else {
+      if (recordingInterval.current) {
+        clearInterval(recordingInterval.current);
+        recordingInterval.current = null;
+      }
+    }
+    return () => {
+      if (recordingInterval.current) {
+        clearInterval(recordingInterval.current);
+        recordingInterval.current = null;
+      }
+    };
+  }, [isRecording]);
+
+  // Helper to format seconds as mm:ss
+  function formatSeconds(sec) {
+    const minutes = Math.floor(sec / 60);
+    const seconds = sec % 60;
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+  }
+
   // this is the main user interface
   // at the top is the title, then the list of notes, then the input area
   return (
-    <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
-      <SafeAreaView style={{ flex: 1 }}>
-        <StatusBar style="auto" />
-        {/* app title at the top */}
-        <View style={styles.header}>
-          <Text style={styles.title}>🧠 thoughts</Text>
-        </View>
-        {/* list of all your notes, newest first */}
-        <ScrollView
-          style={{ flex: 1 }}
-          contentContainerStyle={{ padding: 15, paddingBottom: 220 }}
-          keyboardShouldPersistTaps="handled"
-        >
-          {thoughts.map((thought, idx) => renderThought({ ...thought, key: thought.id || idx }))}
-        </ScrollView>
-        {/* input area for making a new note, always visible above keyboard */}
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
-          keyboardVerticalOffset={0}
-        >
-          <View style={styles.inputContainer}>
-            {/* text box for typing your thought */}
-            <TextInput
-              style={styles.textInput}
-              placeholder="✍️ start typing your thought..."
-              value={currentThought}
-              onChangeText={setCurrentThought}
-              multiline
-              textAlignVertical="top"
-            />
-            {/* row of action buttons: record, draw, mood, add */}
-            <View style={styles.actionButtons}>
-              {/* mic button for recording voice */}
-              <TouchableOpacity
-                style={[styles.actionButton, isRecording && styles.recordingButton]}
-                onPress={isRecording ? stopRecording : startRecording}
-              >
-                <Text style={styles.actionButtonText}>
-                  {isRecording ? '⏹️' : '🎙️'}
-                </Text>
-              </TouchableOpacity>
-              {/* pen button for drawing */}
-              <TouchableOpacity
-                style={[styles.actionButton, isDrawing && styles.drawingButton]}
-                onPress={() => setIsDrawing(!isDrawing)}
-              >
-                <Text style={styles.actionButtonText}>🖍️</Text>
-              </TouchableOpacity>
-              {/* smiley button for picking a mood */}
-              <TouchableOpacity
-                style={styles.actionButton}
-                onPress={() => setShowMoodPicker(!showMoodPicker)}
-              >
-                <Text style={styles.actionButtonText}>😊</Text>
-              </TouchableOpacity>
-              {/* plus button to add the note */}
-              <TouchableOpacity
-                style={styles.addButton}
-                onPress={addThought}
-              >
-                <Text style={styles.addButtonText}>+</Text>
-              </TouchableOpacity>
-            </View>
-            {/* mood picker shows up when you tap the smiley */}
-            {showMoodPicker && (
-              <View style={styles.moodPicker}>
-                {moods.map((mood) => (
-                  <TouchableOpacity
-                    key={mood.name}
-                    style={[
-                      styles.moodOption,
-                      currentMood?.name === mood.name && styles.selectedMood
-                    ]}
-                    onPress={() => {
-                      setCurrentMood(mood);
-                      setShowMoodPicker(false);
-                    }}
-                  >
-                    <Text style={styles.moodOptionText}>{mood.emoji}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            )}
-            {/* drawing area shows up when you tap the pen */}
-            {isDrawing && (
-              <View style={styles.drawingCanvas}>
-                <View style={styles.drawingHeader}>
-                  <Text style={styles.drawingTitle}>🖍️ draw your thought</Text>
-                  <View style={{ flexDirection: 'row' }}>
-                    {/* Done button to save drawing and close drawing area */}
-                    <TouchableOpacity
-                      style={[styles.clearButton, { backgroundColor: '#28a745', marginRight: 8 }]}
-                      onPress={handleDoneDrawing}
-                    >
-                      <Text style={{ color: '#fff', fontSize: 12, fontWeight: '600' }}>Done</Text>
-                    </TouchableOpacity>
-                    {/* clear button to erase your drawing */}
-                    <TouchableOpacity
-                      style={styles.clearButton}
-                      onPress={() => setCurrentDrawing([])}
-                    >
-                      <Text style={styles.clearButtonText}>clear</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-                {/* this is the actual drawing canvas */}
-                <DrawingCanvas
-                  ref={drawingRef}
-                  onDrawingChange={drawing => {
-                    // Only update state in response to drawing events
-                    setCurrentDrawing(drawing);
-                    console.log('App.js received drawing from DrawingCanvas:', drawing);
-                  }}
-                  style={styles.canvas}
-                />
-                {/* Hidden SVG for export, matches visible canvas size and white background */}
-                <View
-                  ref={svgCaptureRef}
-                  style={{ position: 'absolute', left: -1000, width: DRAWING_CANVAS_WIDTH, height: DRAWING_CANVAS_HEIGHT, backgroundColor: '#fff' }}
-                  collapsable={false}
-                >
-                  <Svg width={DRAWING_CANVAS_WIDTH} height={DRAWING_CANVAS_HEIGHT}>
-                    {currentDrawing.map((d, idx) => (
-                      <Path key={idx} d={d} stroke="#000" strokeWidth={2} fill="none" />
-                    ))}
-                  </Svg>
-                </View>
-                {/* Preview exported image if available (before posting) */}
-                {drawingImageUri && (
-                  <View style={{ alignItems: 'center', marginTop: 10 }}>
-                    <Text style={{ fontSize: 12, color: '#888' }}>Preview:</Text>
-                    <Image source={{ uri: drawingImageUri }} style={{ width: 100, height: 100, borderRadius: 8, backgroundColor: '#fff' }} />
-                  </View>
-                )}
-              </View>
-            )}
+    <SafeAreaView style={{ flex: 1 }}>
+      <StatusBar style="auto" />
+      {/* app title at the top */}
+      <View style={styles.header}>
+        <Text style={styles.title}>🧠 thoughts</Text>
+      </View>
+      {/* notes list is scrollable */}
+      <FlatList
+        data={thoughts}
+        keyExtractor={(item, idx) => item.id || String(idx)}
+        renderItem={({ item }) => renderThought({ ...item, key: item.id })}
+        contentContainerStyle={{ flexGrow: 1, padding: 15 }}
+        keyboardShouldPersistTaps="handled"
+        onViewableItemsChanged={onViewableItemsChanged}
+        viewabilityConfig={viewabilityConfig}
+      />
+      {/* Floating month/year label */}
+      {showFloatingDate && (
+        <Animated.View style={[styles.floatingDateLabel, { opacity: floatingDateOpacity }]}> 
+          <Text style={styles.floatingDateText}>{floatingDate}</Text>
+        </Animated.View>
+      )}
+      {/* input area is fixed at the bottom, always visible and pushed up by keyboard */}
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 0}
+      >
+        <View style={styles.inputContainer}>
+          {/* text box for typing your thought */}
+          <TextInput
+            style={[styles.textInput, { maxHeight: 100 }]}
+            placeholder="✍️ start typing your thought..."
+            value={currentThought}
+            onChangeText={setCurrentThought}
+            multiline
+            textAlignVertical="top"
+            maxLength={3000}
+            scrollEnabled={true}
+          />
+          {/* character counter */}
+          <Text style={{ alignSelf: 'flex-end', color: '#888', fontSize: 12, marginBottom: 8 }}>
+            {currentThought.length} / 3000
+          </Text>
+          {/* row of action buttons: record, draw, mood, add */}
+          <View style={styles.actionButtons}>
+            {/* mic button for recording voice */}
+            <TouchableOpacity
+              style={[styles.actionButton, isRecording && styles.recordingButton]}
+              onPress={isRecording ? stopRecording : startRecording}
+            >
+              <Text style={styles.actionButtonText}>
+                {isRecording ? '⏹️' : '🎙️'}
+              </Text>
+            </TouchableOpacity>
+            {/* pen button for drawing */}
+            <TouchableOpacity
+              style={[styles.actionButton, isDrawing && styles.drawingButton]}
+              onPress={() => setIsDrawing(!isDrawing)}
+            >
+              <Text style={styles.actionButtonText}>🖍️</Text>
+            </TouchableOpacity>
+            {/* smiley button for picking a mood */}
+            <TouchableOpacity
+              style={styles.actionButton}
+              onPress={() => setShowMoodPicker(!showMoodPicker)}
+            >
+              <Text style={styles.actionButtonText}>😊</Text>
+            </TouchableOpacity>
+            {/* plus button to add the note */}
+            <TouchableOpacity
+              style={styles.addButton}
+              onPress={addThought}
+            >
+              <Text style={styles.addButtonText}>+</Text>
+            </TouchableOpacity>
           </View>
-        </KeyboardAvoidingView>
-      </SafeAreaView>
-    </TouchableWithoutFeedback>
+          {/* mood picker shows up when you tap the smiley */}
+          {showMoodPicker && (
+            <View style={styles.moodPicker}>
+              {moods.map((mood) => (
+                <TouchableOpacity
+                  key={mood.name}
+                  style={[
+                    styles.moodOption,
+                    currentMood?.name === mood.name && styles.selectedMood
+                  ]}
+                  onPress={() => {
+                    setCurrentMood(mood);
+                    setShowMoodPicker(false);
+                  }}
+                >
+                  <Text style={styles.moodOptionText}>{mood.emoji}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
+          {/* drawing area shows up when you tap the pen */}
+          {isDrawing && !isDrawingFullscreen && (
+            <View style={styles.drawingCanvas}>
+              <View style={styles.drawingHeader}>
+                <Text style={styles.drawingTitle}>🖍️ draw your thought</Text>
+                <View style={{ flexDirection: 'row' }}>
+                  {/* Fullscreen button */}
+                  <TouchableOpacity
+                    style={[styles.clearButton, { backgroundColor: '#007bff', marginRight: 8 }]}
+                    onPress={() => setIsDrawingFullscreen(true)}
+                  >
+                    <Text style={{ color: '#fff', fontSize: 12, fontWeight: '600' }}>Fullscreen</Text>
+                  </TouchableOpacity>
+                  {/* Done button to save drawing and close drawing area */}
+                  <TouchableOpacity
+                    style={[styles.clearButton, { backgroundColor: '#28a745', marginRight: 8 }]}
+                    onPress={handleDoneDrawing}
+                  >
+                    <Text style={{ color: '#fff', fontSize: 12, fontWeight: '600' }}>Done</Text>
+                  </TouchableOpacity>
+                  {/* clear button to erase your drawing */}
+                  <TouchableOpacity
+                    style={styles.clearButton}
+                    onPress={() => setCurrentDrawing([])}
+                  >
+                    <Text style={styles.clearButtonText}>clear</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+              {/* this is the actual drawing canvas */}
+              <DrawingCanvas
+                ref={drawingRef}
+                onDrawingChange={drawing => {
+                  setCurrentDrawing(drawing);
+                  console.log('App.js received drawing from DrawingCanvas:', drawing);
+                }}
+                style={styles.canvas}
+              />
+              {/* Hidden SVG for export, matches visible canvas size and white background */}
+              <View
+                ref={svgCaptureRef}
+                style={{ position: 'absolute', left: -1000, width: DRAWING_CANVAS_WIDTH, height: DRAWING_CANVAS_HEIGHT, backgroundColor: '#fff' }}
+                collapsable={false}
+              >
+                <Svg width={DRAWING_CANVAS_WIDTH} height={DRAWING_CANVAS_HEIGHT}>
+                  {currentDrawing.map((d, idx) => (
+                    <Path key={idx} d={d} stroke="#000" strokeWidth={2} fill="none" />
+                  ))}
+                </Svg>
+              </View>
+              {/* Preview exported image if available (before posting) */}
+              {drawingImageUri && (
+                <View style={{ alignItems: 'center', marginTop: 10 }}>
+                  <Text style={{ fontSize: 12, color: '#888' }}>Preview:</Text>
+                  <Image source={{ uri: drawingImageUri }} style={{ width: 100, height: 100, borderRadius: 8, backgroundColor: '#fff' }} />
+                </View>
+              )}
+            </View>
+          )}
+          {/* Recording indicator */}
+          {isRecording && (
+            <View style={styles.recordingIndicator}>
+              <View style={styles.recordingDot} />
+              <Text style={styles.recordingText}>Recording... {formatSeconds(recordingDuration)}</Text>
+            </View>
+          )}
+          {/* voice note drafts */}
+          {voiceNoteDrafts.length > 0 && (
+            <View style={{ marginBottom: 8 }}>
+              {voiceNoteDrafts.map((draft, idx) => (
+                <View key={draft.id} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4, backgroundColor: '#f8f9fa', borderRadius: 8, padding: 8 }}>
+                  <Text style={{ color: '#888', marginRight: 8 }}>Saved in draft</Text>
+                  <TouchableOpacity onPress={() => handlePlayPauseAudio({ id: draft.id, voiceNote: draft })} style={{ marginRight: 8 }}>
+                    <Text style={{ fontSize: 20 }}>{playingNoteId === draft.id && isPlaying ? '⏸️' : '▶️'}</Text>
+                  </TouchableOpacity>
+                  <Text style={{ fontSize: 14, color: '#333', marginRight: 8 }}>{formatDuration(draft.duration || 0)}</Text>
+                  <TouchableOpacity onPress={() => setVoiceNoteDrafts(voiceNoteDrafts.filter((d) => d.id !== draft.id))}>
+                    <Text style={{ color: '#dc3545', fontWeight: 'bold', fontSize: 16 }}>🗑️</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </View>
+          )}
+        </View>
+      </KeyboardAvoidingView>
+      {/* Fullscreen Drawing Overlay */}
+      {isDrawingFullscreen && (
+        <View style={styles.fullscreenOverlay}>
+          <View style={styles.fullscreenHeader}>
+            <TouchableOpacity
+              style={[styles.clearButton, { backgroundColor: '#212529', marginRight: 8 }]}
+              onPress={() => setIsDrawingFullscreen(false)}
+            >
+              <Text style={{ color: '#fff', fontSize: 14, fontWeight: '600' }}>Back</Text>
+            </TouchableOpacity>
+            <Text style={[styles.drawingTitle, { color: '#fff', flex: 1, textAlign: 'center' }]}>🖍️ Fullscreen Drawing</Text>
+            {/* Save button to add drawing to stream */}
+            <TouchableOpacity
+              style={[styles.clearButton, { backgroundColor: '#28a745', marginLeft: 8 }]}
+              onPress={async () => {
+                await addThought();
+                setIsDrawingFullscreen(false);
+                setIsDrawing(false); // Optionally close drawing mode after save
+              }}
+            >
+              <Text style={{ color: '#fff', fontSize: 14, fontWeight: '600' }}>Save</Text>
+            </TouchableOpacity>
+          </View>
+          <View style={styles.fullscreenCanvasContainer}>
+            <DrawingCanvas
+              ref={drawingRef}
+              onDrawingChange={drawing => {
+                setCurrentDrawing(drawing);
+                console.log('App.js received drawing from DrawingCanvas (fullscreen):', drawing);
+              }}
+              style={{ width: DRAWING_CANVAS_WIDTH, height: FULLSCREEN_CANVAS_HEIGHT, backgroundColor: '#fff', borderRadius: 12, borderWidth: 1, borderColor: '#dee2e6' }}
+            />
+          </View>
+        </View>
+      )}
+    </SafeAreaView>
   );
 }
 
@@ -587,5 +846,71 @@ const styles = StyleSheet.create({
   },
   canvas: {
     flex: 1,
+  },
+  fullscreenOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#000',
+    zIndex: 1000,
+    justifyContent: 'flex-start',
+  },
+  fullscreenHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingTop: Platform.OS === 'ios' ? 50 : 20,
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+    backgroundColor: '#111',
+    zIndex: 1001,
+  },
+  fullscreenCanvasContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 0,
+  },
+  fullscreenCanvas: {
+    width: Dimensions.get('window').width,
+    height: Dimensions.get('window').height - (Platform.OS === 'ios' ? 90 : 60),
+    backgroundColor: '#fff',
+    borderRadius: 0,
+    borderWidth: 0,
+  },
+  floatingDateLabel: {
+    position: 'absolute',
+    top: 90,
+    alignSelf: 'center',
+    backgroundColor: 'rgba(32,32,32,0.85)',
+    borderRadius: 16,
+    paddingHorizontal: 18,
+    paddingVertical: 8,
+    zIndex: 100,
+  },
+  floatingDateText: {
+    color: '#fff',
+    fontWeight: 'bold',
+    fontSize: 16,
+    letterSpacing: 1,
+  },
+  recordingIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+    alignSelf: 'center',
+  },
+  recordingDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#dc3545',
+    marginRight: 8,
+  },
+  recordingText: {
+    color: '#dc3545',
+    fontWeight: 'bold',
+    fontSize: 16,
   },
 });
