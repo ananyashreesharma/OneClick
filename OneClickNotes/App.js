@@ -29,6 +29,8 @@ import DrawingCanvas from './components/DrawingCanvas';
 import Svg, { Path } from 'react-native-svg';
 import { captureRef } from 'react-native-view-shot';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
+import * as ImagePicker from 'expo-image-picker';
+import * as MediaLibrary from 'expo-media-library';
 
 // get the width and height of the screen
 const { width, height } = Dimensions.get('window');
@@ -81,6 +83,11 @@ export default function App() {
   // Add state for recording timer
   const [recordingDuration, setRecordingDuration] = useState(0);
   const recordingInterval = useRef(null);
+  // Add state for photo drafts
+  const [photoDrafts, setPhotoDrafts] = useState([]);
+  // Add state for fullscreen photo viewer
+  const [fullscreenPhoto, setFullscreenPhoto] = useState(null);
+  const [savingPhoto, setSavingPhoto] = useState(false);
 
   // these are the moods you can pick for your note
   const moods = [
@@ -217,6 +224,26 @@ export default function App() {
     }
   };
 
+  // Camera handler
+  const handleTakePhoto = async () => {
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission required', 'Camera permission is required to take photos.');
+      return;
+    }
+    let result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: false,
+      quality: 0.8,
+    });
+    if (!result.canceled && result.assets && result.assets.length > 0) {
+      setPhotoDrafts((drafts) => [
+        ...drafts,
+        { uri: result.assets[0].uri, id: Date.now().toString() },
+      ]);
+    }
+  };
+
   // this adds your note to the stream
   const addThought = async () => {
     setIsDrawing(false);
@@ -242,15 +269,16 @@ export default function App() {
         console.log('Error capturing drawing:', e);
       }
     }
-    if (!currentThought && (!latestDrawing || latestDrawing.length === 0) && !currentMood && !imageUri && voiceNoteDrafts.length === 0) return;
+    if (!currentThought && (!latestDrawing || latestDrawing.length === 0) && !currentMood && !imageUri && voiceNoteDrafts.length === 0 && photoDrafts.length === 0) return;
     const newThought = {
       text: currentThought,
       drawing: latestDrawing,
       drawingImageUri: imageUri,
       drawingWidth,
       drawingHeight,
-      mood: currentMood,
+      mood: null, // mood removed
       voiceNotes: voiceNoteDrafts,
+      photos: photoDrafts,
       id: Date.now().toString(),
       timestamp: new Date().toISOString(),
     };
@@ -262,6 +290,7 @@ export default function App() {
     setCurrentMood(null);
     setShowMoodPicker(false);
     setVoiceNoteDrafts([]);
+    setPhotoDrafts([]);
     Keyboard.dismiss();
   };
 
@@ -355,6 +384,16 @@ export default function App() {
             </View>
           </View>
         )}
+        {/* photos in the note */}
+        {thought.photos && thought.photos.length > 0 && (
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginBottom: 8 }}>
+            {thought.photos.map((photo) => (
+              <TouchableOpacity key={photo.id} onPress={() => setFullscreenPhoto(photo.uri)}>
+                <Image source={{ uri: photo.uri }} style={{ width: 100, height: 100, borderRadius: 8, marginRight: 8, marginBottom: 8, backgroundColor: '#eee' }} />
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
       </View>
     );
   };
@@ -442,6 +481,24 @@ export default function App() {
     return `${minutes}:${seconds.toString().padStart(2, '0')}`;
   }
 
+  // Handler to save photo to device
+  const handleSavePhoto = async (uri) => {
+    setSavingPhoto(true);
+    const { status } = await MediaLibrary.requestPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission required', 'Media library permission is required to save photos.');
+      setSavingPhoto(false);
+      return;
+    }
+    try {
+      await MediaLibrary.saveToLibraryAsync(uri);
+      Alert.alert('Saved!', 'Photo saved to your camera roll.');
+    } catch (e) {
+      Alert.alert('Error', 'Could not save photo.');
+    }
+    setSavingPhoto(false);
+  };
+
   // this is the main user interface
   // at the top is the title, then the list of notes, then the input area
   return (
@@ -506,12 +563,12 @@ export default function App() {
             >
               <Text style={styles.actionButtonText}>🖍️</Text>
             </TouchableOpacity>
-            {/* smiley button for picking a mood */}
+            {/* camera button for taking a photo */}
             <TouchableOpacity
               style={styles.actionButton}
-              onPress={() => setShowMoodPicker(!showMoodPicker)}
+              onPress={handleTakePhoto}
             >
-              <Text style={styles.actionButtonText}>😊</Text>
+              <Text style={styles.actionButtonText}>📷</Text>
             </TouchableOpacity>
             {/* plus button to add the note */}
             <TouchableOpacity
@@ -624,6 +681,22 @@ export default function App() {
               ))}
             </View>
           )}
+          {/* photo drafts */}
+          {photoDrafts.length > 0 && (
+            <View style={{ flexDirection: 'row', marginBottom: 8 }}>
+              {photoDrafts.map((photo) => (
+                <View key={photo.id} style={{ marginRight: 8, position: 'relative' }}>
+                  <Image source={{ uri: photo.uri }} style={{ width: 60, height: 60, borderRadius: 8, backgroundColor: '#eee' }} />
+                  <TouchableOpacity
+                    onPress={() => setPhotoDrafts(photoDrafts.filter((p) => p.id !== photo.id))}
+                    style={{ position: 'absolute', top: -8, right: -8, backgroundColor: '#fff', borderRadius: 12, padding: 2 }}
+                  >
+                    <Text style={{ color: '#dc3545', fontWeight: 'bold', fontSize: 16 }}>🗑️</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </View>
+          )}
         </View>
       </KeyboardAvoidingView>
       {/* Fullscreen Drawing Overlay */}
@@ -659,6 +732,18 @@ export default function App() {
               style={{ width: DRAWING_CANVAS_WIDTH, height: FULLSCREEN_CANVAS_HEIGHT, backgroundColor: '#fff', borderRadius: 12, borderWidth: 1, borderColor: '#dee2e6' }}
             />
           </View>
+        </View>
+      )}
+      {/* Fullscreen Photo Overlay */}
+      {fullscreenPhoto && (
+        <View style={styles.fullscreenPhotoOverlay}>
+          <TouchableOpacity style={styles.fullscreenPhotoClose} onPress={() => setFullscreenPhoto(null)}>
+            <Text style={{ color: '#fff', fontSize: 28, fontWeight: 'bold' }}>×</Text>
+          </TouchableOpacity>
+          <Image source={{ uri: fullscreenPhoto }} style={styles.fullscreenPhoto} resizeMode="contain" />
+          <TouchableOpacity style={styles.savePhotoButton} onPress={() => handleSavePhoto(fullscreenPhoto)} disabled={savingPhoto}>
+            <Text style={{ color: '#fff', fontSize: 18, fontWeight: 'bold' }}>{savingPhoto ? 'Saving...' : 'Save to device'}</Text>
+          </TouchableOpacity>
         </View>
       )}
     </SafeAreaView>
@@ -912,5 +997,39 @@ const styles = StyleSheet.create({
     color: '#dc3545',
     fontWeight: 'bold',
     fontSize: 16,
+  },
+  fullscreenPhotoOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.95)',
+    zIndex: 2000,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  fullscreenPhoto: {
+    width: '90%',
+    height: '70%',
+    borderRadius: 16,
+    backgroundColor: '#222',
+  },
+  fullscreenPhotoClose: {
+    position: 'absolute',
+    top: 40,
+    right: 30,
+    zIndex: 2001,
+    padding: 8,
+  },
+  savePhotoButton: {
+    position: 'absolute',
+    bottom: 60,
+    alignSelf: 'center',
+    backgroundColor: '#007bff',
+    borderRadius: 24,
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    zIndex: 2001,
   },
 });
