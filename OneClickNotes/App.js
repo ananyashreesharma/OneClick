@@ -17,7 +17,6 @@ import {
   Platform,
   KeyboardAvoidingView,
   Keyboard,
-  TouchableWithoutFeedback,
   Image,
   FlatList,
   Animated
@@ -31,6 +30,8 @@ import { captureRef } from 'react-native-view-shot';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
 import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library';
+import { Swipeable, GestureHandlerRootView, RectButton } from 'react-native-gesture-handler';
+import { TouchableWithoutFeedback } from 'react-native';
 
 // get the width and height of the screen
 const { width, height } = Dimensions.get('window');
@@ -88,6 +89,17 @@ export default function App() {
   // Add state for fullscreen photo viewer
   const [fullscreenPhoto, setFullscreenPhoto] = useState(null);
   const [savingPhoto, setSavingPhoto] = useState(false);
+  // Add state for pinned and archived notes
+  const [pinnedNotes, setPinnedNotes] = useState([]);
+  const [archivedNotes, setArchivedNotes] = useState([]);
+  const [showMetadata, setShowMetadata] = useState({});
+  const [toast, setToast] = useState(null);
+  let toastTimeout = useRef(null);
+  // Add state for showing archived modal
+  const [showArchived, setShowArchived] = useState(false);
+  // Add state and ref for export SVG
+  const [exportSvgProps, setExportSvgProps] = useState(null);
+  const exportSvgRef = useRef();
 
   // these are the moods you can pick for your note
   const moods = [
@@ -244,27 +256,81 @@ export default function App() {
     }
   };
 
+  // Add a helper to scale drawing dimensions to fit the stream width
+  function getScaledDrawingSize(origWidth, origHeight, maxWidth, maxHeight) {
+    if (!origWidth || !origHeight) return { width: maxWidth, height: maxHeight };
+    const widthRatio = maxWidth / origWidth;
+    const heightRatio = maxHeight / origHeight;
+    const scale = Math.min(widthRatio, heightRatio, 1);
+    return {
+      width: Math.round(origWidth * scale),
+      height: Math.round(origHeight * scale),
+    };
+  }
+
+  // Utility: Parse SVG path strings and compute bounding box
+  function getDrawingBoundingBox(paths, padding = 12) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    const coordRegex = /[ML] ?(-?\d+(?:\.\d+)?) ?(-?\d+(?:\.\d+)?)/g;
+    for (const path of paths) {
+      let match;
+      while ((match = coordRegex.exec(path))) {
+        const x = parseFloat(match[1]);
+        const y = parseFloat(match[2]);
+        if (!isNaN(x) && !isNaN(y)) {
+          minX = Math.min(minX, x);
+          minY = Math.min(minY, y);
+          maxX = Math.max(maxX, x);
+          maxY = Math.max(maxY, y);
+        }
+      }
+    }
+    if (minX === Infinity || minY === Infinity || maxX === -Infinity || maxY === -Infinity) {
+      // fallback: no points
+      return { minX: 0, minY: 0, width: 1, height: 1 };
+    }
+    return {
+      minX: Math.max(0, minX - padding),
+      minY: Math.max(0, minY - padding),
+      width: (maxX - minX) + 2 * padding,
+      height: (maxY - minY) + 2 * padding,
+    };
+  }
+
+  // Helper to generate a unique string ID
+  function generateUniqueId() {
+    return Date.now().toString() + '-' + Math.floor(Math.random() * 1e8).toString();
+  }
+
   // this adds your note to the stream
   const addThought = async () => {
     setIsDrawing(false);
     const latestDrawing = drawingRef.current?.getCurrentDrawing ? drawingRef.current.getCurrentDrawing() : currentDrawing;
     let imageUri = null;
-    let drawingWidth = DRAWING_CANVAS_WIDTH;
-    let drawingHeight = DRAWING_CANVAS_HEIGHT;
+    let drawingWidth = 1;
+    let drawingHeight = 1;
+    let cropBox = null;
     // If there is a drawing, rasterize it to PNG
     if (latestDrawing && latestDrawing.length > 0) {
+      cropBox = getDrawingBoundingBox(latestDrawing, 12);
+      drawingWidth = cropBox.width;
+      drawingHeight = cropBox.height;
       try {
-        // If in fullscreen, use fullscreen size
-        if (isDrawingFullscreen) {
-          drawingWidth = FULLSCREEN_CANVAS_WIDTH;
-          drawingHeight = FULLSCREEN_CANVAS_HEIGHT;
-        }
-        imageUri = await captureRef(svgCaptureRef, {
+        // Render a hidden SVG with the correct viewBox and size for cropping
+        // We'll use a temporary component for this
+        setExportSvgProps({
+          paths: latestDrawing,
+          viewBox: `${cropBox.minX} ${cropBox.minY} ${cropBox.width} ${cropBox.height}`,
+          width: cropBox.width,
+          height: cropBox.height,
+        });
+        await new Promise(res => setTimeout(res, 50)); // let React render
+        imageUri = await captureRef(exportSvgRef, {
           format: 'png',
           quality: 1,
         });
         setDrawingImageUri(imageUri);
-        console.log('Auto-exported drawing image URI:', imageUri);
+        console.log('Auto-cropped drawing image URI:', imageUri);
       } catch (e) {
         console.log('Error capturing drawing:', e);
       }
@@ -277,9 +343,9 @@ export default function App() {
       drawingWidth,
       drawingHeight,
       mood: null, // mood removed
-      voiceNotes: voiceNoteDrafts,
-      photos: photoDrafts,
-      id: Date.now().toString(),
+      voiceNotes: voiceNoteDrafts.map(vn => ({ ...vn, id: vn.id || generateUniqueId() })),
+      photos: photoDrafts.map(p => ({ ...p, id: p.id || generateUniqueId() })),
+      id: generateUniqueId(),
       timestamp: new Date().toISOString(),
     };
     setThoughts([newThought, ...thoughts]);
@@ -287,6 +353,7 @@ export default function App() {
     setCurrentThought('');
     setCurrentDrawing([]);
     setDrawingImageUri(null);
+    setExportSvgProps(null);
     setCurrentMood(null);
     setShowMoodPicker(false);
     setVoiceNoteDrafts([]);
@@ -299,102 +366,129 @@ export default function App() {
   const MAX_NOTE_PREVIEW_LENGTH = 1000;
   const MAX_NOTE_LENGTH = 3000;
   const MAX_NOTE_EXPANDED_LENGTH = 3000;
+  // Track open swipeable refs
+  const swipeableRefs = useRef({});
+
+  const closeSwipeable = (id) => {
+    if (swipeableRefs.current[id]) {
+      swipeableRefs.current[id].close();
+    }
+  };
+
+  // Helper to deduplicate notes by id
+  function dedupeNotes(notes) {
+    const seen = new Set();
+    return notes.filter(n => {
+      if (!n.id || seen.has(n.id)) return false;
+      seen.add(n.id);
+      return true;
+    });
+  }
+
   const renderThought = (thought) => {
-    // Show PNG image if present, else SVG drawing
-    let imageWidth = DRAWING_CANVAS_WIDTH;
-    let imageHeight = DRAWING_CANVAS_HEIGHT;
-    if (thought.drawingWidth && thought.drawingHeight) {
-      imageWidth = DRAWING_CANVAS_WIDTH;
-      imageHeight = Math.round((thought.drawingHeight / thought.drawingWidth) * DRAWING_CANVAS_WIDTH);
-    }
-    // Determine if this note is expanded
-    const isExpanded = expandedNotes[thought.id];
-    // Handle text preview and toggling
-    let displayText = thought.text;
-    let showViewMore = false;
-    if (thought.text && thought.text.length > MAX_NOTE_PREVIEW_LENGTH && !isExpanded) {
-      displayText = thought.text.slice(0, MAX_NOTE_PREVIEW_LENGTH) + '...';
-      showViewMore = true;
-    } else if (isExpanded && thought.text.length > MAX_NOTE_EXPANDED_LENGTH) {
-      displayText = thought.text.slice(0, MAX_NOTE_EXPANDED_LENGTH) + '...';
-    }
+    const isPinned = pinnedNotes.some((n) => n.id === thought.id);
+    const showMeta = showMetadata[thought.id];
     return (
-      <View key={thought.key} style={[styles.thoughtCard, thought.mood && { backgroundColor: thought.mood.color }]}> 
-        {/* note header with time and mood */}
-        <View style={styles.thoughtHeader}>
-          <Text style={styles.timestamp}>
-            {new Date(thought.timestamp).toLocaleString()}
-          </Text>
-          {thought.mood && (
-            <Text style={styles.moodEmoji}>{thought.mood.emoji}</Text>
-          )}
-        </View>
-        {/* voice note playback if present */}
-        {thought.voiceNotes && thought.voiceNotes.length > 0 && (
-          <View style={{ marginBottom: 8 }}>
-            {thought.voiceNotes.map((vn) => (
-              <View key={vn.id} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
-                <TouchableOpacity onPress={() => handlePlayPauseAudio({ id: vn.id, voiceNote: vn })} style={{ marginRight: 8 }}>
-                  <Text style={{ fontSize: 24 }}>{playingNoteId === vn.id && isPlaying ? '⏸️' : '▶️'}</Text>
-                </TouchableOpacity>
-                <Text style={{ fontSize: 16, color: '#333' }}>{formatDuration(vn.duration || 0)}</Text>
-              </View>
-            ))}
-          </View>
-        )}
-        {/* note text if you typed something */}
-        {thought.text && (
-          <View>
-            <Text style={styles.thoughtText}>{displayText}</Text>
-            {showViewMore && (
-              <TouchableOpacity onPress={() => setExpandedNotes({ ...expandedNotes, [thought.id]: true })}>
-                <Text style={{ color: '#007bff', fontWeight: 'bold', marginTop: 4 }}>View more</Text>
-              </TouchableOpacity>
-            )}
-            {isExpanded && thought.text.length > MAX_NOTE_PREVIEW_LENGTH && (
-              <TouchableOpacity onPress={() => setExpandedNotes({ ...expandedNotes, [thought.id]: false })}>
-                <Text style={{ color: '#007bff', fontWeight: 'bold', marginTop: 4 }}>Show less</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        )}
-        {/* note drawing as PNG if present */}
-        {thought.drawingImageUri && (
-          <View style={styles.drawingContainer}>
-            <Text style={styles.drawingLabel}>🖼️ drawing</Text>
-            <Image source={{ uri: thought.drawingImageUri }} style={{ width: imageWidth, height: imageHeight, borderRadius: 8, backgroundColor: '#fff' }} />
-          </View>
-        )}
-        {/* fallback: note drawing as SVG if present and no PNG */}
-        {!thought.drawingImageUri && thought.drawing && thought.drawing.length > 0 && (
-          <View style={styles.drawingContainer}>
-            <Text style={styles.drawingLabel}>🖍️ drawing</Text>
-            <View style={styles.drawingPreview}>
-              <Svg width={imageWidth} height={imageHeight}>
-                {thought.drawing.map((path, index) => (
-                  <Path
-                    key={index}
-                    d={path}
-                    stroke="#000"
-                    strokeWidth={1.5}
-                    fill="none"
-                  />
-                ))}
-              </Svg>
+      <Swipeable
+        ref={ref => { if (ref) swipeableRefs.current[thought.id] = ref; }}
+        renderLeftActions={() => renderLeftActions(thought, isPinned)}
+        renderRightActions={() => renderRightActions(thought)}
+        overshootLeft={false}
+        overshootRight={false}
+      >
+        <View style={{ borderRadius: 12, flex: 1 }}>
+          <TouchableOpacity
+            activeOpacity={0.95}
+            onLongPress={() => {
+              if (thought.id) setShowMetadata({ ...showMetadata, [thought.id]: !showMeta });
+            }}
+          >
+            <View key={thought.id} style={[styles.thoughtCard, isPinned && { borderColor: '#007bff', borderWidth: 2 }]}> 
+              {isPinned && <Text style={styles.pinIcon}>📌</Text>}
+              {/* note header with time and mood (show only if showMeta) */}
+              {showMeta && (
+                <View style={styles.thoughtHeader}>
+                  <Text style={styles.timestamp}>
+                    {new Date(thought.timestamp).toLocaleString()}
+                  </Text>
+                  {thought.mood && (
+                    <Text style={styles.moodEmoji}>{thought.mood.emoji}</Text>
+                  )}
+                </View>
+              )}
+              {/* voice note playback if present */}
+              {thought.voiceNotes && thought.voiceNotes.length > 0 && (
+                <View style={{ marginBottom: 8 }}>
+                  {thought.voiceNotes.map((vn) => (
+                    <View key={vn.id} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
+                      <TouchableOpacity onPress={() => handlePlayPauseAudio({ id: vn.id, voiceNote: vn })} style={{ marginRight: 8 }}>
+                        <Text style={{ fontSize: 24 }}>{playingNoteId === vn.id && isPlaying ? '⏸️' : '▶️'}</Text>
+                      </TouchableOpacity>
+                      <Text style={{ fontSize: 16, color: '#333' }}>{formatDuration(vn.duration || 0)}</Text>
+                    </View>
+                  ))}
+                </View>
+              )}
+              {/* note text if you typed something */}
+              {thought.text && (
+                <View>
+                  <Text style={styles.thoughtText}>{thought.text}</Text>
+                </View>
+              )}
+              {/* note drawing as PNG if present */}
+              {thought.drawingImageUri && (() => {
+                const { width: scaledW, height: scaledH } = getScaledDrawingSize(thought.drawingWidth, thought.drawingHeight, DRAWING_CANVAS_WIDTH, 10000);
+                return (
+                  <View style={[styles.drawingContainer, {alignItems: 'center'}]}>
+                    <Image
+                      source={{ uri: thought.drawingImageUri }}
+                      style={{
+                        width: scaledW,
+                        height: scaledH,
+                        borderRadius: 8,
+                        backgroundColor: '#fff',
+                        resizeMode: 'contain',
+                        maxWidth: DRAWING_CANVAS_WIDTH,
+                      }}
+                    />
+                  </View>
+                );
+              })()}
+              {/* fallback: note drawing as SVG if present and no PNG */}
+              {!thought.drawingImageUri && thought.drawing && thought.drawing.length > 0 && (() => {
+                const { width: scaledW, height: scaledH } = getScaledDrawingSize(thought.drawingWidth, thought.drawingHeight, DRAWING_CANVAS_WIDTH, 10000);
+                return (
+                  <View style={[styles.drawingContainer, {alignItems: 'center'}]}>
+                    <View style={styles.drawingPreview}>
+                      <Svg width={scaledW} height={scaledH}>
+                        {thought.drawing.map((path, index) => (
+                          <Path
+                            key={index}
+                            d={path}
+                            stroke="#000"
+                            strokeWidth={1.5}
+                            fill="none"
+                          />
+                        ))}
+                      </Svg>
+                    </View>
+                  </View>
+                );
+              })()}
+              {/* photos in the note */}
+              {thought.photos && thought.photos.length > 0 && (
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginBottom: 8 }}>
+                  {thought.photos.map((photo) => (
+                    <TouchableOpacity key={photo.id} onPress={() => setFullscreenPhoto(photo.uri)}>
+                      <Image source={{ uri: photo.uri }} style={{ width: 100, height: 100, borderRadius: 8, marginRight: 8, marginBottom: 8, backgroundColor: '#eee' }} />
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
             </View>
-          </View>
-        )}
-        {/* photos in the note */}
-        {thought.photos && thought.photos.length > 0 && (
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginBottom: 8 }}>
-            {thought.photos.map((photo) => (
-              <TouchableOpacity key={photo.id} onPress={() => setFullscreenPhoto(photo.uri)}>
-                <Image source={{ uri: photo.uri }} style={{ width: 100, height: 100, borderRadius: 8, marginRight: 8, marginBottom: 8, backgroundColor: '#eee' }} />
-              </TouchableOpacity>
-            ))}
-          </View>
-        )}
-      </View>
+          </TouchableOpacity>
+        </View>
+      </Swipeable>
     );
   };
 
@@ -499,254 +593,398 @@ export default function App() {
     setSavingPhoto(false);
   };
 
+  // Archive, pin, delete handlers
+  const handleArchive = (note) => {
+    setThoughts(thoughts.filter((n) => n.id !== note.id));
+    setArchivedNotes([note, ...archivedNotes]);
+    showToast('Note archived');
+  };
+  const handleDelete = (note) => {
+    setThoughts(prev => {
+      const updated = prev.filter((n) => n.id !== note.id);
+      saveThoughts(updated);
+      return updated;
+    });
+    setPinnedNotes(prev => prev.filter((n) => n.id !== note.id));
+    closeSwipeable(note.id);
+    showToast('Note deleted');
+  };
+  const handlePin = (note) => {
+    setPinnedNotes(prev => [note, ...prev.filter(n => n.id !== note.id)]);
+    setThoughts(prev => prev.filter(n => n.id !== note.id));
+    closeSwipeable(note.id);
+  };
+  const handleUnpin = (note) => {
+    setPinnedNotes(prev => prev.filter(n => n.id !== note.id));
+    setThoughts(prev => {
+      const newList = [...prev, note];
+      return newList.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    });
+    closeSwipeable(note.id);
+  };
+  function showToast(message, undo) {
+    setToast({ message, undo });
+    if (toastTimeout.current) clearTimeout(toastTimeout.current);
+    toastTimeout.current = setTimeout(() => setToast(null), 2500);
+  }
+
+  // Render swipe actions
+  const renderLeftActions = (note, isPinned) => (
+    <RectButton style={{ backgroundColor: isPinned ? '#888' : '#007bff', justifyContent: 'center', flex: 1 }} onPress={() => isPinned ? handleUnpin(note) : handlePin(note)}>
+      <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 18, paddingLeft: 24 }}>{isPinned ? 'Unpin' : '📌 Pin'}</Text>
+    </RectButton>
+  );
+  const renderRightActions = (note) => (
+    <View style={{ flexDirection: 'row', height: '100%' }}>
+      <RectButton
+        style={{ backgroundColor: '#f1c40f', justifyContent: 'center', alignItems: 'flex-end', flex: 1, flexDirection: 'row' }}
+        onPress={() => handleArchive(note)}
+      >
+        <Text style={{ fontSize: 22, marginRight: 8 }}>🗄️</Text>
+        <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 18, paddingRight: 24 }}>Archive</Text>
+      </RectButton>
+      <RectButton
+        style={{ backgroundColor: '#dc3545', justifyContent: 'center', alignItems: 'flex-end', flex: 1, flexDirection: 'row' }}
+        onPress={() => {
+          Alert.alert(
+            'Delete Note',
+            'Are you sure you want to delete this note? This cannot be undone.',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Delete', style: 'destructive', onPress: () => handleDelete(note) },
+            ]
+          );
+        }}
+      >
+        <Text style={{ fontSize: 22, marginRight: 8 }}>🗑️</Text>
+        <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 18, paddingRight: 24 }}>Delete</Text>
+      </RectButton>
+    </View>
+  );
+
   // this is the main user interface
   // at the top is the title, then the list of notes, then the input area
   return (
-    <SafeAreaView style={{ flex: 1 }}>
-      <StatusBar style="auto" />
-      {/* app title at the top */}
-      <View style={styles.header}>
-        <Text style={styles.title}>🧠 thoughts</Text>
-      </View>
-      {/* notes list is scrollable */}
-      <FlatList
-        data={thoughts}
-        keyExtractor={(item, idx) => item.id || String(idx)}
-        renderItem={({ item }) => renderThought({ ...item, key: item.id })}
-        contentContainerStyle={{ flexGrow: 1, padding: 15 }}
-        keyboardShouldPersistTaps="handled"
-        onViewableItemsChanged={onViewableItemsChanged}
-        viewabilityConfig={viewabilityConfig}
-      />
-      {/* Floating month/year label */}
-      {showFloatingDate && (
-        <Animated.View style={[styles.floatingDateLabel, { opacity: floatingDateOpacity }]}> 
-          <Text style={styles.floatingDateText}>{floatingDate}</Text>
-        </Animated.View>
-      )}
-      {/* input area is fixed at the bottom, always visible and pushed up by keyboard */}
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 0}
-      >
-        <View style={styles.inputContainer}>
-          {/* text box for typing your thought */}
-          <TextInput
-            style={[styles.textInput, { maxHeight: 100 }]}
-            placeholder="✍️ start typing your thought..."
-            value={currentThought}
-            onChangeText={setCurrentThought}
-            multiline
-            textAlignVertical="top"
-            maxLength={3000}
-            scrollEnabled={true}
-          />
-          {/* character counter */}
-          <Text style={{ alignSelf: 'flex-end', color: '#888', fontSize: 12, marginBottom: 8 }}>
-            {currentThought.length} / 3000
-          </Text>
-          {/* row of action buttons: record, draw, mood, add */}
-          <View style={styles.actionButtons}>
-            {/* mic button for recording voice */}
-            <TouchableOpacity
-              style={[styles.actionButton, isRecording && styles.recordingButton]}
-              onPress={isRecording ? stopRecording : startRecording}
-            >
-              <Text style={styles.actionButtonText}>
-                {isRecording ? '⏹️' : '🎙️'}
-              </Text>
-            </TouchableOpacity>
-            {/* pen button for drawing */}
-            <TouchableOpacity
-              style={[styles.actionButton, isDrawing && styles.drawingButton]}
-              onPress={() => setIsDrawing(!isDrawing)}
-            >
-              <Text style={styles.actionButtonText}>🖍️</Text>
-            </TouchableOpacity>
-            {/* camera button for taking a photo */}
-            <TouchableOpacity
-              style={styles.actionButton}
-              onPress={handleTakePhoto}
-            >
-              <Text style={styles.actionButtonText}>📷</Text>
-            </TouchableOpacity>
-            {/* plus button to add the note */}
-            <TouchableOpacity
-              style={styles.addButton}
-              onPress={addThought}
-            >
-              <Text style={styles.addButtonText}>+</Text>
-            </TouchableOpacity>
-          </View>
-          {/* mood picker shows up when you tap the smiley */}
-          {showMoodPicker && (
-            <View style={styles.moodPicker}>
-              {moods.map((mood) => (
-                <TouchableOpacity
-                  key={mood.name}
-                  style={[
-                    styles.moodOption,
-                    currentMood?.name === mood.name && styles.selectedMood
-                  ]}
-                  onPress={() => {
-                    setCurrentMood(mood);
-                    setShowMoodPicker(false);
-                  }}
-                >
-                  <Text style={styles.moodOptionText}>{mood.emoji}</Text>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaView style={{ flex: 1 }}>
+        <StatusBar style="auto" />
+        {/* app title at the top */}
+        <View style={styles.header}>
+          <Text style={styles.title}>🧠 thoughts</Text>
+          {/* Archived button */}
+          <TouchableOpacity onPress={() => setShowArchived(true)} style={styles.archivedButton}>
+            <Text style={styles.archivedButtonText}>Archived</Text>
+          </TouchableOpacity>
+        </View>
+        {/* notes list is scrollable */}
+        <FlatList
+          data={dedupeNotes([...pinnedNotes, ...thoughts])}
+          keyExtractor={(item, idx) => item.id ? String(item.id) : `note-${idx}`}
+          renderItem={({ item }) => renderThought(item)}
+          contentContainerStyle={{ flexGrow: 1, padding: 15 }}
+          keyboardShouldPersistTaps="handled"
+          onViewableItemsChanged={onViewableItemsChanged}
+          viewabilityConfig={viewabilityConfig}
+          ListHeaderComponent={
+            pinnedNotes.length > 0 ? (
+              <Text style={styles.pinnedSectionLabel}>Pinned</Text>
+            ) : null
+          }
+        />
+        {/* Archived notes modal */}
+        {showArchived && (
+          <View style={styles.archivedModalOverlay}>
+            <View style={styles.archivedModal}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <Text style={styles.archivedModalTitle}>Archived Notes</Text>
+                <TouchableOpacity onPress={() => setShowArchived(false)}>
+                  <Text style={{ fontSize: 22, color: '#888', fontWeight: 'bold' }}>×</Text>
                 </TouchableOpacity>
-              ))}
-            </View>
-          )}
-          {/* drawing area shows up when you tap the pen */}
-          {isDrawing && !isDrawingFullscreen && (
-            <View style={styles.drawingCanvas}>
-              <View style={styles.drawingHeader}>
-                <Text style={styles.drawingTitle}>🖍️ draw your thought</Text>
-                <View style={{ flexDirection: 'row' }}>
-                  {/* Fullscreen button */}
-                  <TouchableOpacity
-                    style={[styles.clearButton, { backgroundColor: '#007bff', marginRight: 8 }]}
-                    onPress={() => setIsDrawingFullscreen(true)}
-                  >
-                    <Text style={{ color: '#fff', fontSize: 12, fontWeight: '600' }}>Fullscreen</Text>
-                  </TouchableOpacity>
-                  {/* Done button to save drawing and close drawing area */}
-                  <TouchableOpacity
-                    style={[styles.clearButton, { backgroundColor: '#28a745', marginRight: 8 }]}
-                    onPress={handleDoneDrawing}
-                  >
-                    <Text style={{ color: '#fff', fontSize: 12, fontWeight: '600' }}>Done</Text>
-                  </TouchableOpacity>
-                  {/* clear button to erase your drawing */}
-                  <TouchableOpacity
-                    style={styles.clearButton}
-                    onPress={() => setCurrentDrawing([])}
-                  >
-                    <Text style={styles.clearButtonText}>clear</Text>
-                  </TouchableOpacity>
-                </View>
               </View>
-              {/* this is the actual drawing canvas */}
+              {archivedNotes.length === 0 ? (
+                <Text style={{ color: '#888', textAlign: 'center', marginTop: 24 }}>No archived notes</Text>
+              ) : (
+                <FlatList
+                  data={archivedNotes}
+                  keyExtractor={(item, idx) => item.id || String(idx)}
+                  renderItem={({ item }) => renderThought({ ...item, key: item.id })}
+                  contentContainerStyle={{ paddingBottom: 24 }}
+                />
+              )}
+            </View>
+          </View>
+        )}
+        {/* Floating month/year label */}
+        {showFloatingDate && (
+          <Animated.View style={[styles.floatingDateLabel, { opacity: floatingDateOpacity }]}> 
+            <Text style={styles.floatingDateText}>{floatingDate}</Text>
+          </Animated.View>
+        )}
+        {/* input area is fixed at the bottom, always visible and pushed up by keyboard */}
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 0}
+        >
+          <View style={styles.inputContainer}>
+            {/* text box for typing your thought */}
+            <TextInput
+              style={[styles.textInput, { maxHeight: 100 }]}
+              placeholder="✍️ start typing your thought..."
+              value={currentThought}
+              onChangeText={setCurrentThought}
+              multiline
+              textAlignVertical="top"
+              maxLength={3000}
+              scrollEnabled={true}
+            />
+            {/* character counter */}
+            <Text style={{ alignSelf: 'flex-end', color: '#888', fontSize: 12, marginBottom: 8 }}>
+              {currentThought.length} / 3000
+            </Text>
+            {/* row of action buttons: record, draw, mood, add */}
+            <View style={styles.actionButtons}>
+              {/* mic button for recording voice */}
+              <TouchableOpacity
+                style={[styles.actionButton, isRecording && styles.recordingButton]}
+                onPress={isRecording ? stopRecording : startRecording}
+              >
+                <Text style={styles.actionButtonText}>
+                  {isRecording ? '⏹️' : '🎙️'}
+                </Text>
+              </TouchableOpacity>
+              {/* pen button for drawing */}
+              <TouchableOpacity
+                style={[styles.actionButton, isDrawing && styles.drawingButton]}
+                onPress={() => setIsDrawing(!isDrawing)}
+              >
+                <Text style={styles.actionButtonText}>🖍️</Text>
+              </TouchableOpacity>
+              {/* camera button for taking a photo */}
+              <TouchableOpacity
+                style={styles.actionButton}
+                onPress={handleTakePhoto}
+              >
+                <Text style={styles.actionButtonText}>📷</Text>
+              </TouchableOpacity>
+              {/* plus button to add the note */}
+              <TouchableOpacity
+                style={styles.addButton}
+                onPress={addThought}
+              >
+                <Text style={styles.addButtonText}>+</Text>
+              </TouchableOpacity>
+            </View>
+            {/* mood picker shows up when you tap the smiley */}
+            {showMoodPicker && (
+              <View style={styles.moodPicker}>
+                {moods.map((mood) => (
+                  <TouchableOpacity
+                    key={mood.name}
+                    style={[
+                      styles.moodOption,
+                      currentMood?.name === mood.name && styles.selectedMood
+                    ]}
+                    onPress={() => {
+                      setCurrentMood(mood);
+                      setShowMoodPicker(false);
+                    }}
+                  >
+                    <Text style={styles.moodOptionText}>{mood.emoji}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+            {/* drawing area shows up when you tap the pen */}
+            {isDrawing && !isDrawingFullscreen && (
+              <View style={styles.drawingCanvas}>
+                <View style={styles.drawingHeader}>
+                  <Text style={styles.drawingTitle}>🖍️ draw your thought</Text>
+                  <View style={{ flexDirection: 'row' }}>
+                    {/* Fullscreen button */}
+                    <TouchableOpacity
+                      style={[styles.clearButton, { backgroundColor: '#007bff', marginRight: 8 }]}
+                      onPress={() => setIsDrawingFullscreen(true)}
+                    >
+                      <Text style={{ color: '#fff', fontSize: 12, fontWeight: '600' }}>Fullscreen</Text>
+                    </TouchableOpacity>
+                    {/* Done button to save drawing and close drawing area */}
+                    <TouchableOpacity
+                      style={[styles.clearButton, { backgroundColor: '#28a745', marginRight: 8 }]}
+                      onPress={handleDoneDrawing}
+                    >
+                      <Text style={{ color: '#fff', fontSize: 12, fontWeight: '600' }}>Done</Text>
+                    </TouchableOpacity>
+                    {/* clear button to erase your drawing */}
+                    <TouchableOpacity
+                      style={styles.clearButton}
+                      onPress={() => setCurrentDrawing([])}
+                    >
+                      <Text style={styles.clearButtonText}>clear</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+                {/* this is the actual drawing canvas */}
+                <DrawingCanvas
+                  ref={drawingRef}
+                  onDrawingChange={drawing => {
+                    setCurrentDrawing(drawing);
+                    console.log('App.js received drawing from DrawingCanvas:', drawing);
+                  }}
+                  style={styles.canvas}
+                />
+                {/* Hidden SVG for export, matches visible canvas size and white background */}
+                <View
+                  ref={svgCaptureRef}
+                  style={{ position: 'absolute', left: -1000, width: DRAWING_CANVAS_WIDTH, height: DRAWING_CANVAS_HEIGHT, backgroundColor: '#fff' }}
+                  collapsable={false}
+                >
+                  <Svg width={DRAWING_CANVAS_WIDTH} height={DRAWING_CANVAS_HEIGHT}>
+                    {currentDrawing.map((d, idx) => (
+                      <Path key={idx} d={d} stroke="#000" strokeWidth={2} fill="none" />
+                    ))}
+                  </Svg>
+                </View>
+                {/* Preview exported image if available (before posting) */}
+                {drawingImageUri && (
+                  <View style={{ alignItems: 'center', marginTop: 10 }}>
+                    <Text style={{ fontSize: 12, color: '#888' }}>Preview:</Text>
+                    <Image source={{ uri: drawingImageUri }} style={{ width: 100, height: 100, borderRadius: 8, backgroundColor: '#fff' }} />
+                  </View>
+                )}
+              </View>
+            )}
+            {/* Recording indicator */}
+            {isRecording && (
+              <View style={styles.recordingIndicator}>
+                <View style={styles.recordingDot} />
+                <Text style={styles.recordingText}>Recording... {formatSeconds(recordingDuration)}</Text>
+              </View>
+            )}
+            {/* voice note drafts */}
+            {voiceNoteDrafts.length > 0 && (
+              <View style={{ marginBottom: 8 }}>
+                {voiceNoteDrafts.map((draft, idx) => (
+                  <View key={draft.id} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4, backgroundColor: '#f8f9fa', borderRadius: 8, padding: 8 }}>
+                    <Text style={{ color: '#888', marginRight: 8 }}>Saved in draft</Text>
+                    <TouchableOpacity onPress={() => handlePlayPauseAudio({ id: draft.id, voiceNote: draft })} style={{ marginRight: 8 }}>
+                      <Text style={{ fontSize: 20 }}>{playingNoteId === draft.id && isPlaying ? '⏸️' : '▶️'}</Text>
+                    </TouchableOpacity>
+                    <Text style={{ fontSize: 14, color: '#333', marginRight: 8 }}>{formatDuration(draft.duration || 0)}</Text>
+                    <TouchableOpacity onPress={() => setVoiceNoteDrafts(voiceNoteDrafts.filter((d) => d.id !== draft.id))}>
+                      <Text style={{ color: '#dc3545', fontWeight: 'bold', fontSize: 16 }}>🗑️</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </View>
+            )}
+            {/* photo drafts */}
+            {photoDrafts.length > 0 && (
+              <View style={{ flexDirection: 'row', marginBottom: 8 }}>
+                {photoDrafts.map((photo) => (
+                  <View key={photo.id} style={{ marginRight: 8, position: 'relative' }}>
+                    <Image source={{ uri: photo.uri }} style={{ width: 60, height: 60, borderRadius: 8, backgroundColor: '#eee' }} />
+                    <TouchableOpacity
+                      onPress={() => setPhotoDrafts(photoDrafts.filter((p) => p.id !== photo.id))}
+                      style={{ position: 'absolute', top: -8, right: -8, backgroundColor: '#fff', borderRadius: 12, padding: 2 }}
+                    >
+                      <Text style={{ color: '#dc3545', fontWeight: 'bold', fontSize: 16 }}>🗑️</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </View>
+            )}
+          </View>
+        </KeyboardAvoidingView>
+        {/* Fullscreen Drawing Overlay */}
+        {isDrawingFullscreen && (
+          <View style={styles.fullscreenOverlay}>
+            <View style={styles.fullscreenHeader}>
+              <TouchableOpacity
+                style={[styles.clearButton, { backgroundColor: '#212529', marginRight: 8 }]}
+                onPress={() => setIsDrawingFullscreen(false)}
+              >
+                <Text style={{ color: '#fff', fontSize: 14, fontWeight: '600' }}>Back</Text>
+              </TouchableOpacity>
+              <Text style={[styles.drawingTitle, { color: '#fff', flex: 1, textAlign: 'center' }]}>🖍️ Fullscreen Drawing</Text>
+              {/* Save button to add drawing to stream */}
+              <TouchableOpacity
+                style={[styles.clearButton, { backgroundColor: '#28a745', marginLeft: 8 }]}
+                onPress={async () => {
+                  await addThought();
+                  setIsDrawingFullscreen(false);
+                  setIsDrawing(false); // Optionally close drawing mode after save
+                }}
+              >
+                <Text style={{ color: '#fff', fontSize: 14, fontWeight: '600' }}>Save</Text>
+              </TouchableOpacity>
+            </View>
+            <View style={styles.fullscreenCanvasContainer}>
               <DrawingCanvas
                 ref={drawingRef}
                 onDrawingChange={drawing => {
                   setCurrentDrawing(drawing);
-                  console.log('App.js received drawing from DrawingCanvas:', drawing);
+                  console.log('App.js received drawing from DrawingCanvas (fullscreen):', drawing);
                 }}
-                style={styles.canvas}
+                style={{ width: FULLSCREEN_CANVAS_WIDTH, height: FULLSCREEN_CANVAS_HEIGHT, backgroundColor: '#fff', borderRadius: 12, borderWidth: 1, borderColor: '#dee2e6' }}
               />
-              {/* Hidden SVG for export, matches visible canvas size and white background */}
+              {/* Hidden SVG for export, matches fullscreen size */}
               <View
                 ref={svgCaptureRef}
-                style={{ position: 'absolute', left: -1000, width: DRAWING_CANVAS_WIDTH, height: DRAWING_CANVAS_HEIGHT, backgroundColor: '#fff' }}
+                style={{ position: 'absolute', left: -1000, width: FULLSCREEN_CANVAS_WIDTH, height: FULLSCREEN_CANVAS_HEIGHT, backgroundColor: '#fff' }}
                 collapsable={false}
               >
-                <Svg width={DRAWING_CANVAS_WIDTH} height={DRAWING_CANVAS_HEIGHT}>
+                <Svg width={FULLSCREEN_CANVAS_WIDTH} height={FULLSCREEN_CANVAS_HEIGHT}>
                   {currentDrawing.map((d, idx) => (
                     <Path key={idx} d={d} stroke="#000" strokeWidth={2} fill="none" />
                   ))}
                 </Svg>
               </View>
-              {/* Preview exported image if available (before posting) */}
-              {drawingImageUri && (
-                <View style={{ alignItems: 'center', marginTop: 10 }}>
-                  <Text style={{ fontSize: 12, color: '#888' }}>Preview:</Text>
-                  <Image source={{ uri: drawingImageUri }} style={{ width: 100, height: 100, borderRadius: 8, backgroundColor: '#fff' }} />
-                </View>
-              )}
             </View>
-          )}
-          {/* Recording indicator */}
-          {isRecording && (
-            <View style={styles.recordingIndicator}>
-              <View style={styles.recordingDot} />
-              <Text style={styles.recordingText}>Recording... {formatSeconds(recordingDuration)}</Text>
-            </View>
-          )}
-          {/* voice note drafts */}
-          {voiceNoteDrafts.length > 0 && (
-            <View style={{ marginBottom: 8 }}>
-              {voiceNoteDrafts.map((draft, idx) => (
-                <View key={draft.id} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4, backgroundColor: '#f8f9fa', borderRadius: 8, padding: 8 }}>
-                  <Text style={{ color: '#888', marginRight: 8 }}>Saved in draft</Text>
-                  <TouchableOpacity onPress={() => handlePlayPauseAudio({ id: draft.id, voiceNote: draft })} style={{ marginRight: 8 }}>
-                    <Text style={{ fontSize: 20 }}>{playingNoteId === draft.id && isPlaying ? '⏸️' : '▶️'}</Text>
-                  </TouchableOpacity>
-                  <Text style={{ fontSize: 14, color: '#333', marginRight: 8 }}>{formatDuration(draft.duration || 0)}</Text>
-                  <TouchableOpacity onPress={() => setVoiceNoteDrafts(voiceNoteDrafts.filter((d) => d.id !== draft.id))}>
-                    <Text style={{ color: '#dc3545', fontWeight: 'bold', fontSize: 16 }}>🗑️</Text>
-                  </TouchableOpacity>
-                </View>
-              ))}
-            </View>
-          )}
-          {/* photo drafts */}
-          {photoDrafts.length > 0 && (
-            <View style={{ flexDirection: 'row', marginBottom: 8 }}>
-              {photoDrafts.map((photo) => (
-                <View key={photo.id} style={{ marginRight: 8, position: 'relative' }}>
-                  <Image source={{ uri: photo.uri }} style={{ width: 60, height: 60, borderRadius: 8, backgroundColor: '#eee' }} />
-                  <TouchableOpacity
-                    onPress={() => setPhotoDrafts(photoDrafts.filter((p) => p.id !== photo.id))}
-                    style={{ position: 'absolute', top: -8, right: -8, backgroundColor: '#fff', borderRadius: 12, padding: 2 }}
-                  >
-                    <Text style={{ color: '#dc3545', fontWeight: 'bold', fontSize: 16 }}>🗑️</Text>
-                  </TouchableOpacity>
-                </View>
-              ))}
-            </View>
-          )}
-        </View>
-      </KeyboardAvoidingView>
-      {/* Fullscreen Drawing Overlay */}
-      {isDrawingFullscreen && (
-        <View style={styles.fullscreenOverlay}>
-          <View style={styles.fullscreenHeader}>
-            <TouchableOpacity
-              style={[styles.clearButton, { backgroundColor: '#212529', marginRight: 8 }]}
-              onPress={() => setIsDrawingFullscreen(false)}
-            >
-              <Text style={{ color: '#fff', fontSize: 14, fontWeight: '600' }}>Back</Text>
+          </View>
+        )}
+        {/* Fullscreen Photo Overlay */}
+        {fullscreenPhoto && (
+          <View style={styles.fullscreenPhotoOverlay}>
+            <TouchableOpacity style={styles.fullscreenPhotoClose} onPress={() => setFullscreenPhoto(null)}>
+              <Text style={{ color: '#fff', fontSize: 28, fontWeight: 'bold' }}>×</Text>
             </TouchableOpacity>
-            <Text style={[styles.drawingTitle, { color: '#fff', flex: 1, textAlign: 'center' }]}>🖍️ Fullscreen Drawing</Text>
-            {/* Save button to add drawing to stream */}
-            <TouchableOpacity
-              style={[styles.clearButton, { backgroundColor: '#28a745', marginLeft: 8 }]}
-              onPress={async () => {
-                await addThought();
-                setIsDrawingFullscreen(false);
-                setIsDrawing(false); // Optionally close drawing mode after save
-              }}
-            >
-              <Text style={{ color: '#fff', fontSize: 14, fontWeight: '600' }}>Save</Text>
+            <Image source={{ uri: fullscreenPhoto }} style={styles.fullscreenPhoto} resizeMode="contain" />
+            <TouchableOpacity style={styles.savePhotoButton} onPress={() => handleSavePhoto(fullscreenPhoto)} disabled={savingPhoto}>
+              <Text style={{ color: '#fff', fontSize: 18, fontWeight: 'bold' }}>{savingPhoto ? 'Saving...' : 'Save to device'}</Text>
             </TouchableOpacity>
           </View>
-          <View style={styles.fullscreenCanvasContainer}>
-            <DrawingCanvas
-              ref={drawingRef}
-              onDrawingChange={drawing => {
-                setCurrentDrawing(drawing);
-                console.log('App.js received drawing from DrawingCanvas (fullscreen):', drawing);
-              }}
-              style={{ width: DRAWING_CANVAS_WIDTH, height: FULLSCREEN_CANVAS_HEIGHT, backgroundColor: '#fff', borderRadius: 12, borderWidth: 1, borderColor: '#dee2e6' }}
-            />
+        )}
+        {/* Toast notification */}
+        {toast && (
+          <View style={styles.toast}>
+            <Text style={styles.toastText}>{toast.message}</Text>
+            {toast.undo && (
+              <TouchableOpacity onPress={toast.undo} style={styles.undoText}>
+                <Text style={styles.undoText}>Undo</Text>
+              </TouchableOpacity>
+            )}
           </View>
-        </View>
-      )}
-      {/* Fullscreen Photo Overlay */}
-      {fullscreenPhoto && (
-        <View style={styles.fullscreenPhotoOverlay}>
-          <TouchableOpacity style={styles.fullscreenPhotoClose} onPress={() => setFullscreenPhoto(null)}>
-            <Text style={{ color: '#fff', fontSize: 28, fontWeight: 'bold' }}>×</Text>
-          </TouchableOpacity>
-          <Image source={{ uri: fullscreenPhoto }} style={styles.fullscreenPhoto} resizeMode="contain" />
-          <TouchableOpacity style={styles.savePhotoButton} onPress={() => handleSavePhoto(fullscreenPhoto)} disabled={savingPhoto}>
-            <Text style={{ color: '#fff', fontSize: 18, fontWeight: 'bold' }}>{savingPhoto ? 'Saving...' : 'Save to device'}</Text>
-          </TouchableOpacity>
-        </View>
-      )}
-    </SafeAreaView>
+        )}
+        {/* Render hidden export SVG for cropping */}
+        {exportSvgProps && (
+          <View
+            ref={exportSvgRef}
+            style={{ position: 'absolute', left: -1000, width: exportSvgProps.width, height: exportSvgProps.height, backgroundColor: '#fff' }}
+            collapsable={false}
+          >
+            <Svg
+              width={exportSvgProps.width}
+              height={exportSvgProps.height}
+              viewBox={exportSvgProps.viewBox}
+            >
+              {exportSvgProps.paths.map((d, idx) => (
+                <Path key={idx} d={d} stroke="#000" strokeWidth={2} fill="none" />
+              ))}
+            </Svg>
+          </View>
+        )}
+      </SafeAreaView>
+    </GestureHandlerRootView>
   );
 }
 
@@ -785,6 +1023,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 4,
     elevation: 3,
+    minHeight: 80,
   },
   thoughtHeader: {
     flexDirection: 'row',
@@ -1031,5 +1270,81 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingVertical: 12,
     zIndex: 2001,
+  },
+  toast: {
+    position: 'absolute',
+    bottom: 120,
+    alignSelf: 'center',
+    backgroundColor: 'rgba(32,32,32,0.95)',
+    borderRadius: 16,
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    zIndex: 3000,
+  },
+  toastText: {
+    color: '#fff',
+    fontWeight: 'bold',
+    fontSize: 16,
+  },
+  undoText: {
+    color: '#ffd700',
+    fontWeight: 'bold',
+    fontSize: 16,
+    marginLeft: 16,
+  },
+  pinnedSectionLabel: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#007bff',
+    marginBottom: 8,
+    marginLeft: 4,
+  },
+  archivedButton: {
+    marginLeft: 'auto',
+    backgroundColor: '#f1f3f4',
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    marginRight: 4,
+  },
+  archivedButtonText: {
+    color: '#888',
+    fontWeight: 'bold',
+    fontSize: 14,
+  },
+  archivedModalOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.15)',
+    zIndex: 3000,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  archivedModal: {
+    width: '90%',
+    maxHeight: '80%',
+    backgroundColor: '#fff',
+    borderRadius: 18,
+    padding: 18,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  archivedModalTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#333',
+  },
+  pinIcon: {
+    position: 'absolute',
+    top: 10,
+    right: 16,
+    fontSize: 22,
+    zIndex: 10,
   },
 });
