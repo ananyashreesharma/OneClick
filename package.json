@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "expo": "^53.0.16",
+    "react-native-keyboard-aware-scroll-view": "^0.9.5"
+  }
+}

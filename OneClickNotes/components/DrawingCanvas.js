@@ -21,13 +21,19 @@ function isValidCoord(x, y) {
 }
 
 // main drawing canvas function
-const DrawingCanvas = ({ onDrawingChange, style }) => {
+const DrawingCanvas = React.forwardRef(({ onDrawingChange, style }, ref) => {
   // paths is a list of all lines you have drawn
   const [paths, setPaths] = useState([]);
-  // currentPath is the line you are drawing right now
+  // currentPath is the line you are drawing right now (use ref for reliability)
+  const currentPathRef = useRef('');
   const [currentPath, setCurrentPath] = useState('');
   // svgRef is not used but could be used to access the svg element
   const svgRef = useRef(null);
+
+  // Expose a method to get current paths
+  React.useImperativeHandle(ref, () => ({
+    getCurrentDrawing: () => paths,
+  }));
 
   // this handles all the touch events for drawing
   const panResponder = useRef(
@@ -37,36 +43,44 @@ const DrawingCanvas = ({ onDrawingChange, style }) => {
       // when you start touching, begin a new path
       onPanResponderGrant: (evt, gestureState) => {
         const { locationX, locationY } = evt.nativeEvent;
+        console.log('DrawingCanvas: panResponderGrant', locationX, locationY);
         if (isValidCoord(locationX, locationY)) {
-          setCurrentPath(`M ${locationX} ${locationY}`);
+          currentPathRef.current = `M ${locationX} ${locationY}`;
+          setCurrentPath(currentPathRef.current);
         } else {
+          currentPathRef.current = '';
           setCurrentPath('');
         }
       },
       // as you move your finger, add points to the path
       onPanResponderMove: (evt, gestureState) => {
         const { locationX, locationY } = evt.nativeEvent;
+        console.log('DrawingCanvas: panResponderMove', locationX, locationY);
         if (isValidCoord(locationX, locationY)) {
-          setCurrentPath(prev => prev ? `${prev} L ${locationX} ${locationY}` : `M ${locationX} ${locationY}`);
+          currentPathRef.current = currentPathRef.current
+            ? `${currentPathRef.current} L ${locationX} ${locationY}`
+            : `M ${locationX} ${locationY}`;
+          setCurrentPath(currentPathRef.current);
         }
       },
       // when you lift your finger, save the path
       onPanResponderRelease: (evt, gestureState) => {
         const { locationX, locationY } = evt.nativeEvent;
-        if (currentPath && isValidCoord(locationX, locationY)) {
-          const newPath = `${currentPath} L ${locationX} ${locationY}`;
-          const updatedPaths = [...paths, newPath];
-          setPaths(updatedPaths);
-          setCurrentPath('');
-          // let the parent know the drawing changed
-          if (onDrawingChange) onDrawingChange(updatedPaths);
-        } else if (currentPath) {
-          // if the last point is not valid, just save what we have
-          const updatedPaths = [...paths, currentPath];
-          setPaths(updatedPaths);
-          setCurrentPath('');
-          if (onDrawingChange) onDrawingChange(updatedPaths);
+        let newPath = currentPathRef.current;
+        console.log('DrawingCanvas: onPanResponderRelease, currentPath:', newPath);
+        if (newPath && isValidCoord(locationX, locationY)) {
+          newPath = `${newPath} L ${locationX} ${locationY}`;
         }
+        if (newPath) {
+          setPaths(prevPaths => {
+            const updatedPaths = [...prevPaths, newPath];
+            if (onDrawingChange) onDrawingChange(updatedPaths);
+            console.log('DrawingCanvas paths after stroke:', updatedPaths);
+            return updatedPaths;
+          });
+        }
+        currentPathRef.current = '';
+        setCurrentPath('');
       },
     })
   ).current;
@@ -75,13 +89,19 @@ const DrawingCanvas = ({ onDrawingChange, style }) => {
   const clearCanvas = () => {
     setPaths([]);
     setCurrentPath('');
+    currentPathRef.current = '';
     if (onDrawingChange) onDrawingChange([]);
+    console.log('DrawingCanvas cleared');
   };
 
-  // this is what shows up on the screen
+  // Extract width and height from style if provided
+  let viewStyle = [{ flex: 1, backgroundColor: '#fff' }, style];
+  let flatStyle = Array.isArray(viewStyle) ? Object.assign({}, ...viewStyle) : viewStyle;
+  const svgWidth = flatStyle.width || width - 60;
+  const svgHeight = flatStyle.height || 200;
   return (
-    <View style={[{ flex: 1, backgroundColor: '#fff' }, style]} {...panResponder.panHandlers}>
-      <Svg ref={svgRef} width={width - 60} height={200}>
+    <View style={viewStyle} {...panResponder.panHandlers}>
+      <Svg ref={svgRef} width={svgWidth} height={svgHeight}>
         {/* draw all the finished paths */}
         {paths.map((path, idx) => (
           <Path key={idx} d={path} stroke="#000" strokeWidth={2} fill="none" />
@@ -93,6 +113,6 @@ const DrawingCanvas = ({ onDrawingChange, style }) => {
       </Svg>
     </View>
   );
-};
+});
 
 export default DrawingCanvas; 
