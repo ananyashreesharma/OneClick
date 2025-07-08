@@ -43,6 +43,14 @@ const DRAWING_CANVAS_HEIGHT = 200;
 const FULLSCREEN_CANVAS_WIDTH = Dimensions.get('window').width;
 const FULLSCREEN_CANVAS_HEIGHT = Dimensions.get('window').height - (Platform.OS === 'ios' ? 90 : 60);
 
+// kindle-like, paper-minimal style changes
+const KINDLE_BG = '#f5f5e6'; // soft, warm off-white
+const KINDLE_TEXT = '#333'; // dark gray for text
+const KINDLE_CARD = '#fafaf3'; // slightly lighter for cards
+const KINDLE_BORDER = '#e0e0d6'; // subtle border
+const KINDLE_ACCENT = '#bdbdb2'; // for underlines, etc.
+const KINDLE_GREEN = '#b6c7a8'; // soft green for add button
+
 // this is the main app function
 export default function App() {
   // these are all the things we keep track of
@@ -100,6 +108,8 @@ export default function App() {
   // Add state and ref for export SVG
   const [exportSvgProps, setExportSvgProps] = useState(null);
   const exportSvgRef = useRef();
+  // Add state for last used input mode
+  const [lastInputMode, setLastInputMode] = useState('text'); // 'text', 'drawing', 'recording'
 
   // these are the moods you can pick for your note
   const moods = [
@@ -635,32 +645,52 @@ export default function App() {
     </RectButton>
   );
   const renderRightActions = (note) => (
-    <View style={{ flexDirection: 'row', height: '100%' }}>
-      <RectButton
-        style={{ backgroundColor: '#f1c40f', justifyContent: 'center', alignItems: 'flex-end', flex: 1, flexDirection: 'row' }}
-        onPress={() => handleArchive(note)}
-      >
-        <Text style={{ fontSize: 22, marginRight: 8 }}>🗄️</Text>
-        <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 18, paddingRight: 24 }}>Archive</Text>
-      </RectButton>
-      <RectButton
-        style={{ backgroundColor: '#dc3545', justifyContent: 'center', alignItems: 'flex-end', flex: 1, flexDirection: 'row' }}
-        onPress={() => {
-          Alert.alert(
-            'Delete Note',
-            'Are you sure you want to delete this note? This cannot be undone.',
-            [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Delete', style: 'destructive', onPress: () => handleDelete(note) },
-            ]
-          );
-        }}
-      >
-        <Text style={{ fontSize: 22, marginRight: 8 }}>🗑️</Text>
-        <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 18, paddingRight: 24 }}>Delete</Text>
-      </RectButton>
-    </View>
+    <RectButton
+      style={{ backgroundColor: '#dc3545', justifyContent: 'center', alignItems: 'center', flex: 1, flexDirection: 'row' }}
+      onPress={() => {
+        Alert.alert(
+          'Delete Note',
+          'Are you sure you want to delete this note? This cannot be undone.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Delete', style: 'destructive', onPress: () => handleDelete(note) },
+          ]
+        );
+      }}
+    >
+      <Text style={{ fontSize: 22, marginRight: 8 }}>🗑️</Text>
+      <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 18 }}>Delete</Text>
+    </RectButton>
   );
+
+  // save last input mode to storage whenever it changes
+  useEffect(() => {
+    AsyncStorage.setItem('lastInputMode', lastInputMode);
+  }, [lastInputMode]);
+
+  // on app load, restore last input mode
+  useEffect(() => {
+    AsyncStorage.getItem('lastInputMode').then(mode => {
+      if (mode === 'drawing') setIsDrawing(true);
+      else if (mode === 'recording') setIsRecording(true);
+      else setIsDrawing(false);
+    });
+  }, []);
+
+  // update input mode when user switches
+  const handleStartDrawing = () => {
+    setIsDrawing(true);
+    setLastInputMode('drawing');
+  };
+  const handleStartRecording = () => {
+    setIsRecording(true);
+    setLastInputMode('recording');
+  };
+  const handleStartTyping = () => {
+    setIsDrawing(false);
+    setIsRecording(false);
+    setLastInputMode('text');
+  };
 
   // this is the main user interface
   // at the top is the title, then the list of notes, then the input area
@@ -670,11 +700,7 @@ export default function App() {
         <StatusBar style="auto" />
         {/* app title at the top */}
         <View style={styles.header}>
-          <Text style={styles.title}>🧠 thoughts</Text>
-          {/* Archived button */}
-          <TouchableOpacity onPress={() => setShowArchived(true)} style={styles.archivedButton}>
-            <Text style={styles.archivedButtonText}>Archived</Text>
-          </TouchableOpacity>
+          <Text style={styles.title}>jot something down?</Text>
         </View>
         {/* notes list is scrollable */}
         <FlatList
@@ -691,29 +717,6 @@ export default function App() {
             ) : null
           }
         />
-        {/* Archived notes modal */}
-        {showArchived && (
-          <View style={styles.archivedModalOverlay}>
-            <View style={styles.archivedModal}>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                <Text style={styles.archivedModalTitle}>Archived Notes</Text>
-                <TouchableOpacity onPress={() => setShowArchived(false)}>
-                  <Text style={{ fontSize: 22, color: '#888', fontWeight: 'bold' }}>×</Text>
-                </TouchableOpacity>
-              </View>
-              {archivedNotes.length === 0 ? (
-                <Text style={{ color: '#888', textAlign: 'center', marginTop: 24 }}>No archived notes</Text>
-              ) : (
-                <FlatList
-                  data={archivedNotes}
-                  keyExtractor={(item, idx) => item.id || String(idx)}
-                  renderItem={({ item }) => renderThought({ ...item, key: item.id })}
-                  contentContainerStyle={{ paddingBottom: 24 }}
-                />
-              )}
-            </View>
-          </View>
-        )}
         {/* Floating month/year label */}
         {showFloatingDate && (
           <Animated.View style={[styles.floatingDateLabel, { opacity: floatingDateOpacity }]}> 
@@ -729,7 +732,7 @@ export default function App() {
             {/* text box for typing your thought */}
             <TextInput
               style={[styles.textInput, { maxHeight: 100 }]}
-              placeholder="✍️ start typing your thought..."
+              placeholder="jot something down..."
               value={currentThought}
               onChangeText={setCurrentThought}
               multiline
@@ -758,13 +761,6 @@ export default function App() {
                 onPress={() => setIsDrawing(!isDrawing)}
               >
                 <Text style={styles.actionButtonText}>🖍️</Text>
-              </TouchableOpacity>
-              {/* camera button for taking a photo */}
-              <TouchableOpacity
-                style={styles.actionButton}
-                onPress={handleTakePhoto}
-              >
-                <Text style={styles.actionButtonText}>📷</Text>
               </TouchableOpacity>
               {/* plus button to add the note */}
               <TouchableOpacity
@@ -877,22 +873,6 @@ export default function App() {
                 ))}
               </View>
             )}
-            {/* photo drafts */}
-            {photoDrafts.length > 0 && (
-              <View style={{ flexDirection: 'row', marginBottom: 8 }}>
-                {photoDrafts.map((photo) => (
-                  <View key={photo.id} style={{ marginRight: 8, position: 'relative' }}>
-                    <Image source={{ uri: photo.uri }} style={{ width: 60, height: 60, borderRadius: 8, backgroundColor: '#eee' }} />
-                    <TouchableOpacity
-                      onPress={() => setPhotoDrafts(photoDrafts.filter((p) => p.id !== photo.id))}
-                      style={{ position: 'absolute', top: -8, right: -8, backgroundColor: '#fff', borderRadius: 12, padding: 2 }}
-                    >
-                      <Text style={{ color: '#dc3545', fontWeight: 'bold', fontSize: 16 }}>🗑️</Text>
-                    </TouchableOpacity>
-                  </View>
-                ))}
-              </View>
-            )}
           </View>
         </KeyboardAvoidingView>
         {/* Fullscreen Drawing Overlay */}
@@ -993,36 +973,38 @@ export default function App() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f8f9fa',
+    backgroundColor: KINDLE_BG,
   },
   header: {
     padding: 20,
     paddingTop: 10,
-    backgroundColor: '#fff',
+    backgroundColor: KINDLE_BG,
     borderBottomWidth: 1,
-    borderBottomColor: '#e9ecef',
+    borderBottomColor: KINDLE_BORDER,
     flexDirection: 'row',
     alignItems: 'center',
   },
   title: {
     fontSize: 28,
-    fontWeight: 'bold',
-    color: '#212529',
+    fontWeight: '400',
+    color: KINDLE_TEXT,
+    fontFamily: 'Georgia',
+    textTransform: 'lowercase',
+    letterSpacing: 1,
   },
   thoughtsList: {
     flex: 1,
     padding: 15,
   },
   thoughtCard: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+    backgroundColor: KINDLE_CARD,
+    borderRadius: 8,
+    padding: 18,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: KINDLE_BORDER,
+    shadowColor: 'transparent',
+    elevation: 0,
     minHeight: 80,
   },
   thoughtHeader: {
@@ -1033,49 +1015,45 @@ const styles = StyleSheet.create({
   },
   timestamp: {
     fontSize: 12,
-    color: '#6c757d',
+    color: KINDLE_ACCENT,
+    fontFamily: 'Georgia',
   },
   moodEmoji: {
     fontSize: 20,
   },
   thoughtText: {
-    fontSize: 16,
-    lineHeight: 24,
-    color: '#212529',
+    fontSize: 17,
+    lineHeight: 26,
+    color: KINDLE_TEXT,
+    fontFamily: 'Georgia',
     marginBottom: 8,
   },
   drawingContainer: {
     marginTop: 8,
   },
-  drawingLabel: {
-    fontSize: 14,
-    color: '#6c757d',
-    marginBottom: 4,
-  },
   drawingPreview: {
-    backgroundColor: '#f8f9fa',
+    backgroundColor: KINDLE_CARD,
     borderRadius: 8,
     padding: 12,
     alignItems: 'center',
   },
-  drawingText: {
-    color: '#6c757d',
-    fontStyle: 'italic',
-  },
   inputContainer: {
-    backgroundColor: '#fff',
+    backgroundColor: KINDLE_BG,
     padding: 15,
     borderTopWidth: 1,
-    borderTopColor: '#e9ecef',
+    borderTopColor: KINDLE_BORDER,
   },
   textInput: {
-    borderWidth: 1,
-    borderColor: '#dee2e6',
-    borderRadius: 12,
-    padding: 12,
-    fontSize: 16,
-    minHeight: 80,
+    borderBottomWidth: 1,
+    borderColor: KINDLE_ACCENT,
+    borderRadius: 0,
+    padding: 0,
+    fontSize: 17,
+    minHeight: 40,
     marginBottom: 12,
+    color: KINDLE_TEXT,
+    fontFamily: 'Georgia',
+    backgroundColor: 'transparent',
   },
   actionButtons: {
     flexDirection: 'row',
@@ -1084,12 +1062,14 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   actionButton: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    backgroundColor: '#e9ecef',
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'transparent',
     justifyContent: 'center',
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: KINDLE_ACCENT,
   },
   recordingButton: {
     backgroundColor: '#dc3545',
@@ -1101,16 +1081,16 @@ const styles = StyleSheet.create({
     fontSize: 20,
   },
   addButton: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    backgroundColor: '#28a745',
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    backgroundColor: KINDLE_GREEN,
     justifyContent: 'center',
     alignItems: 'center',
   },
   addButtonText: {
-    fontSize: 24,
-    color: '#fff',
+    fontSize: 28,
+    color: KINDLE_TEXT,
     fontWeight: 'bold',
   },
   moodPicker: {
@@ -1346,5 +1326,6 @@ const styles = StyleSheet.create({
     right: 16,
     fontSize: 22,
     zIndex: 10,
+    color: KINDLE_ACCENT,
   },
 });
