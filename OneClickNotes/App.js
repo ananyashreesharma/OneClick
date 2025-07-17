@@ -19,7 +19,8 @@ import {
   Keyboard,
   Image,
   FlatList,
-  Animated
+  Animated,
+  Modal
 } from 'react-native';
 import { Audio } from 'expo-av';
 import * as FileSystem from 'expo-file-system';
@@ -58,6 +59,7 @@ export default function App() {
   const [thoughts, setThoughts] = useState([]);
   // currentThought is what you are typing right now
   const [currentThought, setCurrentThought] = useState('');
+  const [isTyping, setIsTyping] = useState(false);
   // recording is the audio object when you are recording
   const [recording, setRecording] = useState(null);
   // isRecording is true when you are recording
@@ -110,6 +112,17 @@ export default function App() {
   const exportSvgRef = useRef();
   // Add state for last used input mode
   const [lastInputMode, setLastInputMode] = useState('text'); // 'text', 'drawing', 'recording'
+  // Add drawingData state to persist the drawing
+  const [drawingData, setDrawingData] = useState([]);
+
+  // --- AUDIO MODAL STATE ---
+  const [audioModalVisible, setAudioModalVisible] = useState(false);
+  const [audioStatus, setAudioStatus] = useState('idle'); // 'idle' | 'recording' | 'paused' | 'stopped'
+  const [recordingObj, setRecordingObj] = useState(null);
+  const [recordedUri, setRecordedUri] = useState(null);
+  const [audioDuration, setAudioDuration] = useState(0);
+  const [audioPlayback, setAudioPlayback] = useState(null);
+  const [audioIsPlaying, setAudioIsPlaying] = useState(false);
 
   // these are the moods you can pick for your note
   const moods = [
@@ -124,11 +137,8 @@ export default function App() {
   // Add a ref to always get the latest drawing from DrawingCanvas
   const drawingRef = useRef();
 
-  // Debug: log drawing when Done is tapped
-  const handleDoneDrawing = () => {
-    console.log('Done tapped, currentDrawing:', currentDrawing);
-    setIsDrawing(false);
-  };
+  // Debug: log drawing when Done is tappe
+
 
   // this runs once when the app starts
   useEffect(() => {
@@ -173,11 +183,13 @@ export default function App() {
   // this starts recording your voice
   const startRecording = async () => {
     try {
+      console.log('Attempting to start recording...');
       const { recording } = await Audio.Recording.createAsync(
         Audio.RecordingOptionsPresets.HIGH_QUALITY
       );
       setRecording(recording);
       setIsRecording(true);
+      console.log('Recording started:', recording);
     } catch (error) {
       console.log('error starting recording:', error);
     }
@@ -185,22 +197,25 @@ export default function App() {
 
   // this stops recording and adds a voice note to your note
   const stopRecording = async () => {
-    if (!recording) return;
+    if (!recording) {
+      console.log('No recording in progress.');
+      return null;
+    }
     try {
+      console.log('stopRecording: called');
       await recording.stopAndUnloadAsync();
       const uri = recording.getURI();
-      // Get duration
       const { sound, status } = await recording.createNewLoadedSoundAsync();
       const duration = status.durationMillis;
       setRecording(null);
       setIsRecording(false);
-      // Add the new draft to the array
-      setVoiceNoteDrafts((drafts) => [
-        ...drafts,
-        { uri, duration, timestamp: new Date().toISOString(), id: Date.now().toString() },
-      ]);
+      const newVoiceNote = { uri, duration, timestamp: new Date().toISOString(), id: Date.now().toString() };
+      setVoiceNoteDrafts((drafts) => [...drafts, newVoiceNote]);
+      console.log('Recording stopped. URI:', uri, 'Duration:', duration, 'VoiceNote:', newVoiceNote);
+      return newVoiceNote;
     } catch (error) {
       console.log('error stopping recording:', error);
+      return null;
     }
   };
 
@@ -313,9 +328,9 @@ export default function App() {
   }
 
   // this adds your note to the stream
-  const addThought = async () => {
+  const addThought = async (newVoiceNote = null) => {
     setIsDrawing(false);
-    const latestDrawing = drawingRef.current?.getCurrentDrawing ? drawingRef.current.getCurrentDrawing() : currentDrawing;
+    const latestDrawing = drawingRef.current?.getPaths ? drawingRef.current.getPaths() : currentDrawing;
     let imageUri = null;
     let drawingWidth = 1;
     let drawingHeight = 1;
@@ -345,7 +360,9 @@ export default function App() {
         console.log('Error capturing drawing:', e);
       }
     }
-    if (!currentThought && (!latestDrawing || latestDrawing.length === 0) && !currentMood && !imageUri && voiceNoteDrafts.length === 0 && photoDrafts.length === 0) return;
+    const allVoiceNotes = newVoiceNote ? [...voiceNoteDrafts, newVoiceNote] : voiceNoteDrafts;
+    console.log('addThought: allVoiceNotes', allVoiceNotes);
+    if (!currentThought && (!latestDrawing || latestDrawing.length === 0) && !currentMood && !imageUri && allVoiceNotes.length === 0 && photoDrafts.length === 0) return;
     const newThought = {
       text: currentThought,
       drawing: latestDrawing,
@@ -353,11 +370,12 @@ export default function App() {
       drawingWidth,
       drawingHeight,
       mood: null, // mood removed
-      voiceNotes: voiceNoteDrafts.map(vn => ({ ...vn, id: vn.id || generateUniqueId() })),
+      voiceNotes: allVoiceNotes.map(vn => ({ ...vn, id: vn.id || generateUniqueId() })),
       photos: photoDrafts.map(p => ({ ...p, id: p.id || generateUniqueId() })),
       id: generateUniqueId(),
       timestamp: new Date().toISOString(),
     };
+    console.log('addThought: newThought', newThought);
     setThoughts([newThought, ...thoughts]);
     saveThoughts([newThought, ...thoughts]);
     setCurrentThought('');
@@ -677,7 +695,12 @@ export default function App() {
     });
   }, []);
 
-  // update input mode when user switches
+  // handler functions for opening modals
+  const handleStartTyping = () => {
+    setIsTyping(true);
+    setLastInputMode('text');
+  };
+  // handleStartDrawing: do NOT clear the drawing when opening the modal
   const handleStartDrawing = () => {
     setIsDrawing(true);
     setLastInputMode('drawing');
@@ -686,195 +709,162 @@ export default function App() {
     setIsRecording(true);
     setLastInputMode('recording');
   };
-  const handleStartTyping = () => {
+
+  // handler functions for closing modals and saving notes
+  const handleDoneTyping = () => {
+    setIsTyping(false);
+    addThought();
+  };
+  // handleDoneDrawing: clear the drawing ONLY after posting
+  const handleDoneDrawing = () => {
+    addThought(); // add the note
     setIsDrawing(false);
+    setDrawingData([]); // clear after posting
+    drawingRef.current?.clear(); // clear the canvas
+  };
+  const handleDoneRecording = async () => {
+    const newVoiceNote = await stopRecording();
+    console.log('handleDoneRecording: newVoiceNote', newVoiceNote);
     setIsRecording(false);
-    setLastInputMode('text');
+    addThought(newVoiceNote);
   };
 
-  // this is the main user interface
-  // at the top is the title, then the list of notes, then the input area
+  // --- AUDIO MODAL LOGIC ---
+  const openAudioModal = () => {
+    setAudioModalVisible(true);
+    setAudioStatus('idle');
+    setRecordingObj(null);
+    setRecordedUri(null);
+    setAudioDuration(0);
+    setAudioPlayback(null);
+    setAudioIsPlaying(false);
+  };
+  const closeAudioModal = () => {
+    setAudioModalVisible(false);
+    setAudioStatus('idle');
+    setRecordingObj(null);
+    setRecordedUri(null);
+    setAudioDuration(0);
+    setAudioPlayback(null);
+    setAudioIsPlaying(false);
+  };
+  const startAudioRecording = async () => {
+    try {
+      await Audio.requestPermissionsAsync();
+      await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
+      const { recording } = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+      setRecordingObj(recording);
+      setAudioStatus('recording');
+      setAudioDuration(0);
+    } catch (e) {
+      Alert.alert('Error', 'Could not start recording.');
+    }
+  };
+  const pauseAudioRecording = async () => {
+    if (recordingObj) {
+      await recordingObj.pauseAsync();
+      setAudioStatus('paused');
+    }
+  };
+  const resumeAudioRecording = async () => {
+    if (recordingObj) {
+      await recordingObj.startAsync();
+      setAudioStatus('recording');
+    }
+  };
+  const stopAudioRecording = async () => {
+    if (recordingObj) {
+      await recordingObj.stopAndUnloadAsync();
+      const uri = recordingObj.getURI();
+      setRecordedUri(uri);
+      setAudioStatus('stopped');
+      setRecordingObj(null);
+    }
+  };
+  const reRecordAudio = async () => {
+    if (audioPlayback) {
+      await audioPlayback.unloadAsync();
+      setAudioPlayback(null);
+    }
+    setRecordedUri(null);
+    setAudioStatus('idle');
+    setAudioDuration(0);
+  };
+  const playAudio = async () => {
+    if (recordedUri) {
+      if (audioPlayback) {
+        await audioPlayback.replayAsync();
+        setAudioIsPlaying(true);
+        return;
+      }
+      const { sound } = await Audio.Sound.createAsync({ uri: recordedUri }, {}, (status) => {
+        if (status.didJustFinish) setAudioIsPlaying(false);
+      });
+      setAudioPlayback(sound);
+      setAudioIsPlaying(true);
+      await sound.playAsync();
+    }
+  };
+  const pauseAudio = async () => {
+    if (audioPlayback) {
+      await audioPlayback.pauseAsync();
+      setAudioIsPlaying(false);
+    }
+  };
+  // Timer for recording
+  useEffect(() => {
+    let interval = null;
+    if (audioStatus === 'recording') {
+      interval = setInterval(() => setAudioDuration((d) => d + 1), 1000);
+    } else if (interval) {
+      clearInterval(interval);
+    }
+    return () => { if (interval) clearInterval(interval); };
+  }, [audioStatus]);
+
+  // --- AUDIO MODAL UI ---
+  // Replace the old Record modal logic with: onPress={openAudioModal} for the Record tab.
+  // When posting a note, use voiceNoteDrafts as before.
+
+  // 1. home screen: show only header and three input mode tabs
+  // 2. when a tab is tapped, open a full-screen modal/page for that mode
+  // 3. each full-screen mode has its own page with a 'Done' button
+  // 4. remove inline input, drawing, and recording controls from home
+  // 5. only one mode visible at a time; main stream only on home
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1 }}>
         <StatusBar style="auto" />
-        {/* app title at the top */}
+        {/* 1. greeting header */}
         <View style={styles.header}>
-          <Text style={styles.title}>jot something down?</Text>
+          <Text style={styles.title}>Welcome, [Name]</Text>
         </View>
-        {/* notes list is scrollable */}
-        <FlatList
-          data={dedupeNotes([...pinnedNotes, ...thoughts])}
-          keyExtractor={(item, idx) => item.id ? String(item.id) : `note-${idx}`}
-          renderItem={({ item }) => renderThought(item)}
-          contentContainerStyle={{ flexGrow: 1, padding: 15 }}
-          keyboardShouldPersistTaps="handled"
-          onViewableItemsChanged={onViewableItemsChanged}
-          viewabilityConfig={viewabilityConfig}
-          ListHeaderComponent={
-            pinnedNotes.length > 0 ? (
-              <Text style={styles.pinnedSectionLabel}>Pinned</Text>
-            ) : null
-          }
-        />
-        {/* Floating month/year label */}
-        {showFloatingDate && (
-          <Animated.View style={[styles.floatingDateLabel, { opacity: floatingDateOpacity }]}> 
-            <Text style={styles.floatingDateText}>{floatingDate}</Text>
-          </Animated.View>
-        )}
-        {/* input area is fixed at the bottom, always visible and pushed up by keyboard */}
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 0}
-        >
-          <View style={styles.inputContainer}>
-            {/* text box for typing your thought */}
-            <TextInput
-              style={[styles.textInput, { maxHeight: 100 }]}
-              placeholder="jot something down..."
-              value={currentThought}
-              onChangeText={setCurrentThought}
-              multiline
-              textAlignVertical="top"
-              maxLength={3000}
-              scrollEnabled={true}
-            />
-            {/* character counter */}
-            <Text style={{ alignSelf: 'flex-end', color: '#888', fontSize: 12, marginBottom: 8 }}>
-              {currentThought.length} / 3000
-            </Text>
-            {/* row of action buttons: record, draw, mood, add */}
-            <View style={styles.actionButtons}>
-              {/* mic button for recording voice */}
-              <TouchableOpacity
-                style={[styles.actionButton, isRecording && styles.recordingButton]}
-                onPress={isRecording ? stopRecording : startRecording}
-              >
-                <Text style={styles.actionButtonText}>
-                  {isRecording ? '⏹️' : '🎙️'}
-                </Text>
-              </TouchableOpacity>
-              {/* pen button for drawing */}
-              <TouchableOpacity
-                style={[styles.actionButton, isDrawing && styles.drawingButton]}
-                onPress={() => setIsDrawing(!isDrawing)}
-              >
-                <Text style={styles.actionButtonText}>🖍️</Text>
-              </TouchableOpacity>
-              {/* plus button to add the note */}
-              <TouchableOpacity
-                style={styles.addButton}
-                onPress={addThought}
-              >
-                <Text style={styles.addButtonText}>+</Text>
-              </TouchableOpacity>
-            </View>
-            {/* mood picker shows up when you tap the smiley */}
-            {showMoodPicker && (
-              <View style={styles.moodPicker}>
-                {moods.map((mood) => (
-                  <TouchableOpacity
-                    key={mood.name}
-                    style={[
-                      styles.moodOption,
-                      currentMood?.name === mood.name && styles.selectedMood
-                    ]}
-                    onPress={() => {
-                      setCurrentMood(mood);
-                      setShowMoodPicker(false);
-                    }}
-                  >
-                    <Text style={styles.moodOptionText}>{mood.emoji}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            )}
-            {/* drawing area shows up when you tap the pen */}
-            {isDrawing && !isDrawingFullscreen && (
-              <View style={styles.drawingCanvas}>
-                <View style={styles.drawingHeader}>
-                  <Text style={styles.drawingTitle}>🖍️ draw your thought</Text>
-                  <View style={{ flexDirection: 'row' }}>
-                    {/* Fullscreen button */}
-                    <TouchableOpacity
-                      style={[styles.clearButton, { backgroundColor: '#007bff', marginRight: 8 }]}
-                      onPress={() => setIsDrawingFullscreen(true)}
-                    >
-                      <Text style={{ color: '#fff', fontSize: 12, fontWeight: '600' }}>Fullscreen</Text>
-                    </TouchableOpacity>
-                    {/* Done button to save drawing and close drawing area */}
-                    <TouchableOpacity
-                      style={[styles.clearButton, { backgroundColor: '#28a745', marginRight: 8 }]}
-                      onPress={handleDoneDrawing}
-                    >
-                      <Text style={{ color: '#fff', fontSize: 12, fontWeight: '600' }}>Done</Text>
-                    </TouchableOpacity>
-                    {/* clear button to erase your drawing */}
-                    <TouchableOpacity
-                      style={styles.clearButton}
-                      onPress={() => setCurrentDrawing([])}
-                    >
-                      <Text style={styles.clearButtonText}>clear</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-                {/* this is the actual drawing canvas */}
-                <DrawingCanvas
-                  ref={drawingRef}
-                  onDrawingChange={drawing => {
-                    setCurrentDrawing(drawing);
-                    console.log('App.js received drawing from DrawingCanvas:', drawing);
-                  }}
-                  style={styles.canvas}
-                />
-                {/* Hidden SVG for export, matches visible canvas size and white background */}
-                <View
-                  ref={svgCaptureRef}
-                  style={{ position: 'absolute', left: -1000, width: DRAWING_CANVAS_WIDTH, height: DRAWING_CANVAS_HEIGHT, backgroundColor: '#fff' }}
-                  collapsable={false}
-                >
-                  <Svg width={DRAWING_CANVAS_WIDTH} height={DRAWING_CANVAS_HEIGHT}>
-                    {currentDrawing.map((d, idx) => (
-                      <Path key={idx} d={d} stroke="#000" strokeWidth={2} fill="none" />
-                    ))}
-                  </Svg>
-                </View>
-                {/* Preview exported image if available (before posting) */}
-                {drawingImageUri && (
-                  <View style={{ alignItems: 'center', marginTop: 10 }}>
-                    <Text style={{ fontSize: 12, color: '#888' }}>Preview:</Text>
-                    <Image source={{ uri: drawingImageUri }} style={{ width: 100, height: 100, borderRadius: 8, backgroundColor: '#fff' }} />
-                  </View>
-                )}
-              </View>
-            )}
-            {/* Recording indicator */}
-            {isRecording && (
-              <View style={styles.recordingIndicator}>
-                <View style={styles.recordingDot} />
-                <Text style={styles.recordingText}>Recording... {formatSeconds(recordingDuration)}</Text>
-              </View>
-            )}
-            {/* voice note drafts */}
-            {voiceNoteDrafts.length > 0 && (
-              <View style={{ marginBottom: 8 }}>
-                {voiceNoteDrafts.map((draft, idx) => (
-                  <View key={draft.id} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4, backgroundColor: '#f8f9fa', borderRadius: 8, padding: 8 }}>
-                    <Text style={{ color: '#888', marginRight: 8 }}>Saved in draft</Text>
-                    <TouchableOpacity onPress={() => handlePlayPauseAudio({ id: draft.id, voiceNote: draft })} style={{ marginRight: 8 }}>
-                      <Text style={{ fontSize: 20 }}>{playingNoteId === draft.id && isPlaying ? '⏸️' : '▶️'}</Text>
-                    </TouchableOpacity>
-                    <Text style={{ fontSize: 14, color: '#333', marginRight: 8 }}>{formatDuration(draft.duration || 0)}</Text>
-                    <TouchableOpacity onPress={() => setVoiceNoteDrafts(voiceNoteDrafts.filter((d) => d.id !== draft.id))}>
-                      <Text style={{ color: '#dc3545', fontWeight: 'bold', fontSize: 16 }}>🗑️</Text>
-                    </TouchableOpacity>
-                  </View>
-                ))}
-              </View>
-            )}
-          </View>
-        </KeyboardAvoidingView>
+        {/* 2. input mode tabs (write, draw, record) with icons */}
+        <View style={styles.inputModeTabs}>
+          <TouchableOpacity
+            style={[styles.inputModeTab, lastInputMode === 'text' && styles.selectedInputModeTab]}
+            onPress={handleStartTyping}
+          >
+            <Text style={styles.inputModeTabText}>Write</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.inputModeTab, lastInputMode === 'drawing' && styles.selectedInputModeTab]}
+            onPress={handleStartDrawing}
+          >
+            <Text style={styles.inputModeTabText}>Draw</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.inputModeTab, lastInputMode === 'recording' && styles.selectedInputModeTab]}
+            onPress={openAudioModal}
+          >
+            <Text style={styles.inputModeTabText}>Record</Text>
+          </TouchableOpacity>
+        </View>
+        {/* 3. input box styled as a card */}
+        {/* The inline input area, drawing area, and recording controls are removed from the home screen. */}
+        {/* The main stream is only visible on the home screen. */}
+        {/* The full-screen modals for typing, drawing, and recording are handled by the new handlers. */}
+
         {/* Fullscreen Drawing Overlay */}
         {isDrawingFullscreen && (
           <View style={styles.fullscreenOverlay}>
@@ -901,10 +891,6 @@ export default function App() {
             <View style={styles.fullscreenCanvasContainer}>
               <DrawingCanvas
                 ref={drawingRef}
-                onDrawingChange={drawing => {
-                  setCurrentDrawing(drawing);
-                  console.log('App.js received drawing from DrawingCanvas (fullscreen):', drawing);
-                }}
                 style={{ width: FULLSCREEN_CANVAS_WIDTH, height: FULLSCREEN_CANVAS_HEIGHT, backgroundColor: '#fff', borderRadius: 12, borderWidth: 1, borderColor: '#dee2e6' }}
               />
               {/* Hidden SVG for export, matches fullscreen size */}
@@ -962,6 +948,114 @@ export default function App() {
               ))}
             </Svg>
           </View>
+        )}
+        {/* Write full-screen modal */}
+        <Modal visible={isTyping} animationType="slide" presentationStyle="fullScreen">
+          <SafeAreaView style={styles.fullScreenModal}>
+            <View style={{ flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', width: '100%' }}>
+              <TouchableOpacity onPress={handleDoneTyping} style={{ padding: 16 }}>
+                <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#222' }}>Done</Text>
+              </TouchableOpacity>
+            </View>
+            <TextInput
+              style={styles.fullScreenTextInput}
+              placeholder="jot something down..."
+              value={currentThought}
+              onChangeText={setCurrentThought}
+              multiline
+              autoFocus
+            />
+          </SafeAreaView>
+        </Modal>
+        {/* Draw full-screen modal */}
+        <Modal visible={isDrawing} animationType="slide" presentationStyle="fullScreen">
+          <SafeAreaView style={styles.fullScreenModal}>
+            <View style={{ flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', width: '100%' }}>
+              <TouchableOpacity onPress={handleDoneDrawing} style={{ padding: 16 }}>
+                <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#222' }}>Done</Text>
+              </TouchableOpacity>
+            </View>
+            <DrawingCanvas
+              ref={drawingRef}
+              style={styles.fullScreenDrawingCanvas}
+              initialPaths={drawingData}
+              onDrawingChange={setDrawingData}
+            />
+          </SafeAreaView>
+        </Modal>
+        {/* Record full-screen modal */}
+        <Modal visible={audioModalVisible} animationType="slide" presentationStyle="fullScreen">
+          <SafeAreaView style={styles.fullScreenModal}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+              {audioStatus === 'stopped' && (
+                <TouchableOpacity onPress={reRecordAudio} style={{ padding: 16 }}>
+                  <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#222' }}>Re-record</Text>
+                </TouchableOpacity>
+              )}
+              <View style={{ flex: 1 }} />
+              <TouchableOpacity onPress={async () => {
+                if (audioStatus === 'recording') await stopAudioRecording();
+                if (recordedUri) {
+                  // Save as draft and post to stream
+                  setVoiceNoteDrafts([{ uri: recordedUri, duration: audioDuration * 1000, timestamp: new Date().toISOString(), id: Date.now().toString() }]);
+                  closeAudioModal();
+                  setTimeout(() => addThought(), 0); // Ensure state is updated before posting
+                } else {
+                  closeAudioModal();
+                }
+              }} style={{ padding: 16 }}>
+                <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#222' }}>Done</Text>
+              </TouchableOpacity>
+            </View>
+            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+              <Text style={{ fontSize: 32, fontFamily: 'Georgia', color: '#333', marginBottom: 24 }}>{formatSeconds(audioDuration)}</Text>
+              {audioStatus === 'idle' && (
+                <TouchableOpacity onPress={startAudioRecording} style={{ backgroundColor: '#222', borderRadius: 50, padding: 32, marginBottom: 24 }}>
+                  <Text style={{ color: '#fff', fontSize: 32 }}>Start Recording</Text>
+                </TouchableOpacity>
+              )}
+              {audioStatus === 'recording' && (
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <TouchableOpacity onPress={pauseAudioRecording} style={{ backgroundColor: '#bdbdb2', borderRadius: 50, padding: 32, marginRight: 24 }}>
+                    <Text style={{ color: '#fff', fontSize: 32 }}>Pause</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={stopAudioRecording} style={{ backgroundColor: '#dc3545', borderRadius: 50, padding: 32 }}>
+                    <Text style={{ color: '#fff', fontSize: 32 }}>Stop</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+              {audioStatus === 'paused' && (
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <TouchableOpacity onPress={resumeAudioRecording} style={{ backgroundColor: '#28a745', borderRadius: 50, padding: 32, marginRight: 24 }}>
+                    <Text style={{ color: '#fff', fontSize: 32 }}>Resume</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={stopAudioRecording} style={{ backgroundColor: '#dc3545', borderRadius: 50, padding: 32 }}>
+                    <Text style={{ color: '#fff', fontSize: 32 }}>Stop</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+              {audioStatus === 'stopped' && recordedUri && (
+                <View style={{ alignItems: 'center' }}>
+                  <TouchableOpacity onPress={audioIsPlaying ? pauseAudio : playAudio} style={{ backgroundColor: '#333', borderRadius: 50, padding: 32, marginBottom: 16 }}>
+                    <Text style={{ color: '#fff', fontSize: 32 }}>{audioIsPlaying ? 'Pause' : 'Play'}</Text>
+                  </TouchableOpacity>
+                  <Text style={{ color: '#333', fontSize: 18, fontFamily: 'Georgia' }}>Preview your recording</Text>
+                </View>
+              )}
+            </View>
+          </SafeAreaView>
+        </Modal>
+        {/* restore the notes stream to a simple, chronological vertical list (twitter-like) */}
+        {!(isTyping || isDrawing || isRecording) && (
+          <FlatList
+            data={dedupeNotes([...pinnedNotes, ...thoughts])}
+            keyExtractor={(item, idx) => item.id ? String(item.id) : `note-${idx}`}
+            renderItem={({ item }) => renderThought(item)}
+            contentContainerStyle={{ flexGrow: 1, padding: 15 }}
+            keyboardShouldPersistTaps="handled"
+            onViewableItemsChanged={onViewableItemsChanged}
+            viewabilityConfig={viewabilityConfig}
+          />
         )}
       </SafeAreaView>
     </GestureHandlerRootView>
@@ -1327,5 +1421,115 @@ const styles = StyleSheet.create({
     fontSize: 22,
     zIndex: 10,
     color: KINDLE_ACCENT,
+  },
+  inputModeTabs: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    backgroundColor: '#f8f9fa',
+    borderRadius: 12,
+    marginBottom: 12,
+    paddingVertical: 8,
+  },
+  inputModeTab: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 8,
+  },
+  selectedInputModeTab: {
+    backgroundColor: '#e9ecef',
+    borderRadius: 8,
+  },
+  inputModeTabText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#495057',
+  },
+  topHeaderCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 20,
+    margin: 16,
+    marginBottom: 8,
+    shadowColor: '#000',
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  headerText: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: '#222',
+  },
+  avatarEmoji: {
+    fontSize: 32,
+    marginLeft: 8,
+  },
+  inputModeCardRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginHorizontal: 16,
+    marginBottom: 16,
+  },
+  inputModeCard: {
+    flex: 1,
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    alignItems: 'center',
+    paddingVertical: 24,
+    marginHorizontal: 6,
+    shadowColor: '#000',
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  inputModeEmoji: {
+    fontSize: 28,
+    marginBottom: 8,
+  },
+  inputModeLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#222',
+  },
+  fullScreenModal: {
+    flex: 1,
+    backgroundColor: '#fff',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  fullScreenTextInput: {
+    flex: 1,
+    width: '100%',
+    fontSize: 20,
+    color: '#222',
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 24,
+    textAlignVertical: 'top',
+  },
+  fullScreenDrawingCanvas: {
+    flex: 1,
+    width: '100%',
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    marginBottom: 24,
+  },
+  doneButton: {
+    backgroundColor: '#e0e0e0',
+    borderRadius: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 32,
+    alignSelf: 'center',
+    marginBottom: 24,
+  },
+  doneButtonText: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#222',
   },
 });
