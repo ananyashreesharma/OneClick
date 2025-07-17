@@ -33,6 +33,8 @@ import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library';
 import { Swipeable, GestureHandlerRootView, RectButton } from 'react-native-gesture-handler';
 import { TouchableWithoutFeedback } from 'react-native';
+import { differenceInCalendarDays, parseISO } from 'date-fns';
+import { MaterialCommunityIcons, Feather, FontAwesome } from '@expo/vector-icons';
 
 // get the width and height of the screen
 const { width, height } = Dimensions.get('window');
@@ -431,9 +433,9 @@ export default function App() {
     });
   }
 
-  const renderThought = (thought) => {
+  function renderThoughtCard(thought) {
+    const badge = getNoteTypeBadge(thought);
     const isPinned = pinnedNotes.some((n) => n.id === thought.id);
-    const showMeta = showMetadata[thought.id];
     return (
       <Swipeable
         ref={ref => { if (ref) swipeableRefs.current[thought.id] = ref; }}
@@ -442,125 +444,44 @@ export default function App() {
         overshootLeft={false}
         overshootRight={false}
       >
-        <View style={{ borderRadius: 12, flex: 1 }}>
-          <TouchableOpacity
-            activeOpacity={0.95}
-            onLongPress={() => {
-              if (thought.id) setShowMetadata({ ...showMetadata, [thought.id]: !showMeta });
-            }}
-          >
-            <View key={thought.id} style={[styles.thoughtCard, isPinned && { borderColor: '#007bff', borderWidth: 2 }]}> 
-              {isPinned && <Text style={styles.pinIcon}>📌</Text>}
-              {/* note header with time and mood (show only if showMeta) */}
-              {showMeta && (
-                <View style={styles.thoughtHeader}>
-                  <Text style={styles.timestamp}>
-                    {new Date(thought.timestamp).toLocaleString()}
-                  </Text>
-                  {thought.mood && (
-                    <Text style={styles.moodEmoji}>{thought.mood.emoji}</Text>
-                  )}
-                </View>
-              )}
-              {/* voice note playback if present */}
-              {thought.voiceNotes && thought.voiceNotes.length > 0 && (
-                <View style={{ marginBottom: 8 }}>
-                  {thought.voiceNotes.map((vn) => (
-                    <View key={vn.id} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
-                      <TouchableOpacity onPress={() => handlePlayPauseAudio({ id: vn.id, voiceNote: vn })} style={{ marginRight: 8 }}>
-                        <Text style={{ fontSize: 24 }}>{playingNoteId === vn.id && isPlaying ? '⏸️' : '▶️'}</Text>
-                      </TouchableOpacity>
-                      <Text style={{ fontSize: 16, color: '#333' }}>{formatDuration(vn.duration || 0)}</Text>
-                    </View>
-                  ))}
-                </View>
-              )}
-              {/* note text if you typed something */}
-              {thought.text && (
-                <View>
-                  <Text style={styles.thoughtText}>{thought.text}</Text>
-                </View>
-              )}
-              {/* note drawing as PNG if present */}
-              {thought.drawingImageUri && (() => {
-                const { width: scaledW, height: scaledH } = getScaledDrawingSize(thought.drawingWidth, thought.drawingHeight, DRAWING_CANVAS_WIDTH, 10000);
-                return (
-                  <View style={[styles.drawingContainer, {alignItems: 'center'}]}>
-                    <Image
-                      source={{ uri: thought.drawingImageUri }}
-                      style={{
-                        width: scaledW,
-                        height: scaledH,
-                        borderRadius: 8,
-                        backgroundColor: '#fff',
-                        resizeMode: 'contain',
-                        maxWidth: DRAWING_CANVAS_WIDTH,
-                      }}
-                    />
-                  </View>
-                );
-              })()}
-              {/* fallback: note drawing as SVG if present and no PNG */}
-              {!thought.drawingImageUri && thought.drawing && thought.drawing.length > 0 && (() => {
-                const { width: scaledW, height: scaledH } = getScaledDrawingSize(thought.drawingWidth, thought.drawingHeight, DRAWING_CANVAS_WIDTH, 10000);
-                return (
-                  <View style={[styles.drawingContainer, {alignItems: 'center'}]}>
-                    <View style={styles.drawingPreview}>
-                      <Svg width={scaledW} height={scaledH}>
-                        {thought.drawing.map((path, index) => (
-                          <Path
-                            key={index}
-                            d={path}
-                            stroke="#000"
-                            strokeWidth={1.5}
-                            fill="none"
-                          />
-                        ))}
-                      </Svg>
-                    </View>
-                  </View>
-                );
-              })()}
-              {/* photos in the note */}
-              {thought.photos && thought.photos.length > 0 && (
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginBottom: 8 }}>
-                  {thought.photos.map((photo) => (
-                    <TouchableOpacity key={photo.id} onPress={() => setFullscreenPhoto(photo.uri)}>
-                      <Image source={{ uri: photo.uri }} style={{ width: 100, height: 100, borderRadius: 8, marginRight: 8, marginBottom: 8, backgroundColor: '#eee' }} />
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              )}
+        <View key={thought.id} style={styles.card}>
+          {/* Time ago and badge */}
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <Text style={styles.timeAgo}>{timeAgo(thought.timestamp)}</Text>
+            <View style={[styles.badge, { backgroundColor: badge.color }]}> 
+              <Text style={{ color: badge.textColor, fontWeight: 'bold', fontSize: 13 }}>{badge.label}</Text>
             </View>
-          </TouchableOpacity>
+          </View>
+          {/* Content: text, drawing, audio */}
+          {thought.text ? (
+            <Text style={styles.thoughtText}>{thought.text}</Text>
+          ) : null}
+          {thought.drawingImageUri && (
+            <View style={[styles.drawingContainer, { alignItems: 'center', marginVertical: 8 }]}> 
+              <Image
+                source={{ uri: thought.drawingImageUri }}
+                style={{ width: DRAWING_CANVAS_WIDTH, height: 120, borderRadius: 8, backgroundColor: '#fff', resizeMode: 'contain' }}
+              />
+            </View>
+          )}
+          {thought.voiceNotes && thought.voiceNotes.length > 0 && (
+            <View style={{ marginVertical: 8 }}>
+              {thought.voiceNotes.map((vn) => (
+                <View key={vn.id} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
+                  <TouchableOpacity onPress={() => handlePlayPauseAudio({ id: vn.id, voiceNote: vn })} style={{ marginRight: 8 }}>
+                    <Text style={{ fontSize: 24 }}>{playingNoteId === vn.id && isPlaying ? '⏸️' : '▶️'}</Text>
+                  </TouchableOpacity>
+                  {/* Simple waveform placeholder */}
+                  <View style={{ width: 40, height: 16, backgroundColor: '#eaf6f3', borderRadius: 8, marginRight: 8 }} />
+                  <Text style={{ fontSize: 16, color: '#333' }}>{formatDuration(vn.duration || 0)}</Text>
+                </View>
+              ))}
+            </View>
+          )}
         </View>
       </Swipeable>
     );
-  };
-
-  // Helper to capture SVG as PNG
-  const exportDrawingAsImage = async () => {
-    if (!currentDrawing || currentDrawing.length === 0) return;
-    try {
-      const uri = await captureRef(svgCaptureRef, {
-        format: 'png',
-        quality: 1,
-      });
-      setDrawingImageUri(uri);
-      console.log('Exported drawing image URI:', uri);
-      // You can now upload or use this URI in your stream
-    } catch (e) {
-      console.log('Error capturing drawing:', e);
-    }
-  };
-
-  // Log when DrawingCanvas is mounted/unmounted
-  useEffect(() => {
-    console.log('DrawingCanvas mounted');
-    return () => {
-      console.log('DrawingCanvas unmounted');
-    };
-  }, []);
+  }
 
   // Helper to format month/year
   function formatMonthYear(dateString) {
@@ -851,32 +772,31 @@ export default function App() {
   // 5. only one mode visible at a time; main stream only on home
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <SafeAreaView style={{ flex: 1 }}>
+      <SafeAreaView style={{ flex: 1, backgroundColor: '#f7efe7' }}>
         <StatusBar style="auto" />
         {/* 1. greeting header */}
-        <View style={styles.header}>
-          <Text style={styles.title}>Welcome, [Name]</Text>
-        </View>
-        {/* 2. input mode tabs (write, draw, record) with icons */}
-        <View style={styles.inputModeTabs}>
-          <TouchableOpacity
-            style={[styles.inputModeTab, lastInputMode === 'text' && styles.selectedInputModeTab]}
-            onPress={handleStartTyping}
-          >
-            <Text style={styles.inputModeTabText}>Write</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.inputModeTab, lastInputMode === 'drawing' && styles.selectedInputModeTab]}
-            onPress={handleStartDrawing}
-          >
-            <Text style={styles.inputModeTabText}>Draw</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.inputModeTab, lastInputMode === 'recording' && styles.selectedInputModeTab]}
-            onPress={openAudioModal}
-          >
-            <Text style={styles.inputModeTabText}>Record</Text>
-          </TouchableOpacity>
+        <View style={styles.topSection}>
+          <View style={styles.headerRow}>
+            <Text style={styles.greetingText}>Welcome, Nnya</Text>
+            {/* Simple avatar illustration (replace with your own image if desired) */}
+            <View style={styles.avatarContainer}>
+              <MaterialCommunityIcons name="account-outline" size={40} color="#222" />
+            </View>
+          </View>
+          <View style={styles.inputModeCardsRow}>
+            <TouchableOpacity style={styles.inputModeCard} onPress={handleStartTyping}>
+              <Feather name="pen-tool" size={32} color="#222" style={{ marginBottom: 8 }} />
+              <Text style={styles.inputModeCardLabel}>Write</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.inputModeCard} onPress={handleStartDrawing}>
+              <MaterialCommunityIcons name="brush-variant" size={32} color="#222" style={{ marginBottom: 8 }} />
+              <Text style={styles.inputModeCardLabel}>Draw</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.inputModeCard} onPress={openAudioModal}>
+              <FontAwesome name="microphone" size={32} color="#222" style={{ marginBottom: 8 }} />
+              <Text style={styles.inputModeCardLabel}>Record</Text>
+            </TouchableOpacity>
+          </View>
         </View>
         {/* 3. input box styled as a card */}
         {/* The inline input area, drawing area, and recording controls are removed from the home screen. */}
@@ -1071,23 +991,64 @@ export default function App() {
         </Modal>
         {/* restore the notes stream to a simple, chronological vertical list (twitter-like) */}
         {!(isTyping || isDrawing || isRecording) && (
-          <FlatList
-            data={dedupeNotes([...pinnedNotes, ...thoughts])}
-            keyExtractor={(item, idx) => item.id ? String(item.id) : `note-${idx}`}
-            renderItem={({ item }) => renderThought(item)}
-            contentContainerStyle={{ flexGrow: 1, padding: 15 }}
-            keyboardShouldPersistTaps="handled"
-            onViewableItemsChanged={onViewableItemsChanged}
-            viewabilityConfig={viewabilityConfig}
-          />
+          <ScrollView style={{ flex: 1, backgroundColor: '#f7efe7' }} contentContainerStyle={{ padding: 0 }}>
+            {Object.entries(groupNotesByDate(dedupeNotes([...pinnedNotes, ...thoughts]))).map(([section, notes]) => (
+              notes.length > 0 && (
+                <View key={section}>
+                  <Text style={styles.sectionHeader}>{sectionLabels[section]}</Text>
+                  {notes.map(note => renderThoughtCard(note))}
+                </View>
+              )
+            ))}
+          </ScrollView>
         )}
       </SafeAreaView>
     </GestureHandlerRootView>
   );
 }
 
+// Utility: format time ago
+function timeAgo(dateString) {
+  const now = new Date();
+  const date = new Date(dateString);
+  const diffMs = now - date;
+  const diffSec = Math.floor(diffMs / 1000);
+  if (diffSec < 60) return `${diffSec}s ago`;
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  return `${diffDay}d ago`;
+}
+// Utility: group notes by date
+function groupNotesByDate(notes) {
+  const today = [];
+  const yesterday = [];
+  const lastWeek = [];
+  const now = new Date();
+  notes.forEach(note => {
+    const noteDate = new Date(note.timestamp);
+    const daysAgo = differenceInCalendarDays(now, noteDate);
+    if (daysAgo === 0) today.push(note);
+    else if (daysAgo === 1) yesterday.push(note);
+    else if (daysAgo <= 7) lastWeek.push(note);
+  });
+  return { today, yesterday, lastWeek };
+}
+// Utility: get badge for note type
+function getNoteTypeBadge(note) {
+  if (note.voiceNotes && note.voiceNotes.length > 0) return { label: 'Calm', color: '#eaf6f3', textColor: '#3bb18f' };
+  if (note.drawingImageUri) return { label: 'Sketch', color: '#eaf6f3', textColor: '#3bb18f' };
+  if (note.text && note.text.toLowerCase().includes('dream')) return { label: 'Dream Log', color: '#eaf6f3', textColor: '#3bb18f' };
+  return { label: 'Journal', color: '#eaf6f3', textColor: '#3bb18f' };
+}
+// Section headers
+const sectionLabels = { today: 'Today', yesterday: 'Yesterday', lastWeek: 'Last Week' };
+
 // these are all the styles for the app
 // they make everything look nice and spaced out
+const BEIGE = '#f7efe7';
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -1142,8 +1103,8 @@ const styles = StyleSheet.create({
   thoughtText: {
     fontSize: 17,
     lineHeight: 26,
-    color: KINDLE_TEXT,
-    fontFamily: 'Georgia',
+    color: '#222',
+    fontFamily: 'Georgia, serif',
     marginBottom: 8,
   },
   drawingContainer: {
@@ -1505,7 +1466,7 @@ const styles = StyleSheet.create({
     paddingVertical: 24,
     marginHorizontal: 6,
     shadowColor: '#000',
-    shadowOpacity: 0.04,
+    shadowOpacity: 0.06,
     shadowRadius: 8,
     elevation: 2,
   },
@@ -1555,5 +1516,101 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: 'bold',
     color: '#222',
+  },
+  card: {
+    backgroundColor: '#fff', // White cards for stream posts
+    borderRadius: 18,
+    padding: 20,
+    marginVertical: 12,
+    marginHorizontal: 8,
+    shadowColor: '#000',
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  badge: {
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    alignSelf: 'flex-end',
+    fontFamily: 'Georgia, serif',
+  },
+  timeAgo: {
+    color: '#bdbdbd',
+    fontSize: 13,
+    fontFamily: 'Georgia, serif',
+  },
+  sectionHeader: {
+    marginTop: 24,
+    marginBottom: 8,
+    marginLeft: 16,
+    fontSize: 15,
+    color: '#bdbdbd',
+    fontWeight: 'bold',
+    letterSpacing: 1,
+    fontFamily: 'Georgia, serif',
+  },
+  topSection: {
+    backgroundColor: BEIGE,
+    paddingHorizontal: 18,
+    paddingTop: 24,
+    paddingBottom: 18,
+    borderBottomLeftRadius: 18,
+    borderBottomRightRadius: 18,
+    marginBottom: 12,
+    shadowColor: '#000',
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 1,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 18,
+  },
+  greetingText: {
+    fontSize: 26,
+    fontWeight: '700',
+    color: '#222',
+    fontFamily: 'Georgia, serif',
+  },
+  avatarContainer: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  inputModeCardsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  inputModeCard: {
+    flex: 1,
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    paddingVertical: 22,
+    paddingHorizontal: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginHorizontal: 4,
+    flex: 1,
+    shadowColor: '#000',
+    shadowOpacity: 0.06,
+    shadowRadius: 6,
+    elevation: 2,
+  },
+  inputModeCardLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#222',
+    fontFamily: 'Georgia, serif',
   },
 });
