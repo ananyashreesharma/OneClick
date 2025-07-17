@@ -229,13 +229,16 @@ export default function App() {
 
   // Play/pause audio for a note
   const handlePlayPauseAudio = async (note) => {
+    console.log('handlePlayPauseAudio called:', note);
     if (playingNoteId === note.id && playingSound) {
       if (isPlaying) {
         await playingSound.pauseAsync();
         setIsPlaying(false);
+        console.log('Paused playback for note', note.id);
       } else {
         await playingSound.playAsync();
         setIsPlaying(true);
+        console.log('Resumed playback for note', note.id);
       }
       return;
     }
@@ -245,19 +248,34 @@ export default function App() {
       setPlayingSound(null);
       setPlayingNoteId(null);
       setIsPlaying(false);
+      console.log('Unloaded previous sound');
     }
     if (note.voiceNote && note.voiceNote.uri) {
-      const { sound } = await Audio.Sound.createAsync({ uri: note.voiceNote.uri }, {}, (status) => {
-        if (status.didJustFinish) {
-          setIsPlaying(false);
-          setPlayingNoteId(null);
-          setPlayingSound(null);
-        }
-      });
-      setPlayingSound(sound);
-      setPlayingNoteId(note.id);
-      setIsPlaying(true);
-      await sound.playAsync();
+      console.log('Attempting to play URI:', note.voiceNote.uri);
+      try {
+        const { sound } = await Audio.Sound.createAsync(
+          { uri: note.voiceNote.uri },
+          {},
+          (status) => {
+            if (status.didJustFinish) {
+              setIsPlaying(false);
+              setPlayingNoteId(null);
+              setPlayingSound(null);
+              console.log('Playback finished for note', note.id);
+            }
+          }
+        );
+        await sound.setVolumeAsync(1.0); // Set volume to max
+        setPlayingSound(sound);
+        setPlayingNoteId(note.id);
+        setIsPlaying(true);
+        await sound.playAsync();
+        console.log('Started playback for note', note.id);
+      } catch (e) {
+        console.log('Error playing audio for note', note.id, e);
+      }
+    } else {
+      console.log('No valid voiceNote or URI for note', note);
     }
   };
 
@@ -360,7 +378,7 @@ export default function App() {
         console.log('Error capturing drawing:', e);
       }
     }
-    const allVoiceNotes = newVoiceNote ? [...voiceNoteDrafts, newVoiceNote] : voiceNoteDrafts;
+    const allVoiceNotes = newVoiceNote ? [newVoiceNote] : voiceNoteDrafts;
     console.log('addThought: allVoiceNotes', allVoiceNotes);
     if (!currentThought && (!latestDrawing || latestDrawing.length === 0) && !currentMood && !imageUri && allVoiceNotes.length === 0 && photoDrafts.length === 0) return;
     const newThought = {
@@ -994,12 +1012,18 @@ export default function App() {
               )}
               <View style={{ flex: 1 }} />
               <TouchableOpacity onPress={async () => {
+                console.log('AUDIO MODAL: Done pressed');
+                console.log('AUDIO MODAL: recordedUri', recordedUri);
+                console.log('AUDIO MODAL: audioDuration', audioDuration);
                 if (audioStatus === 'recording') await stopAudioRecording();
                 if (recordedUri) {
-                  // Save as draft and post to stream
-                  setVoiceNoteDrafts([{ uri: recordedUri, duration: audioDuration * 1000, timestamp: new Date().toISOString(), id: Date.now().toString() }]);
+                  // Build the new voice note object
+                  const newVoiceNote = { uri: recordedUri, duration: audioDuration * 1000, timestamp: new Date().toISOString(), id: Date.now().toString() };
+                  // Post directly to stream
+                  addThought(newVoiceNote);
+                  // Optionally update drafts for consistency
+                  setVoiceNoteDrafts([newVoiceNote]);
                   closeAudioModal();
-                  setTimeout(() => addThought(), 0); // Ensure state is updated before posting
                 } else {
                   closeAudioModal();
                 }
