@@ -22,6 +22,7 @@ import {
   Animated,
   Modal
 } from 'react-native';
+import { Picker } from '@react-native-picker/picker';
 import { Audio } from 'expo-av';
 import * as FileSystem from 'expo-file-system';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -35,6 +36,7 @@ import { Swipeable, GestureHandlerRootView, RectButton } from 'react-native-gest
 import { TouchableWithoutFeedback } from 'react-native';
 import { differenceInCalendarDays, parseISO } from 'date-fns';
 import { MaterialCommunityIcons, Feather, FontAwesome } from '@expo/vector-icons';
+import { AntDesign } from '@expo/vector-icons';
 
 // get the width and height of the screen
 const { width, height } = Dimensions.get('window');
@@ -53,6 +55,14 @@ const KINDLE_CARD = '#fafaf3'; // slightly lighter for cards
 const KINDLE_BORDER = '#e0e0d6'; // subtle border
 const KINDLE_ACCENT = '#bdbdb2'; // for underlines, etc.
 const KINDLE_GREEN = '#b6c7a8'; // soft green for add button
+
+// Add swipe width constants
+const CARD_WIDTH = Dimensions.get('window').width - 32;
+const SWIPE_ACTION_WIDTH = CARD_WIDTH * 0.7;
+
+// Get card border radius and height from styles
+const CARD_BORDER_RADIUS = 12; // or styles.card.borderRadius if defined
+const CARD_HEIGHT = 120; // or whatever your card height is, or calculate dynamically if needed
 
 // this is the main app function
 export default function App() {
@@ -116,6 +126,13 @@ export default function App() {
   const [lastInputMode, setLastInputMode] = useState('text'); // 'text', 'drawing', 'recording'
   // Add drawingData state to persist the drawing
   const [drawingData, setDrawingData] = useState([]);
+  // Add state for note type filter
+  const [noteTypeFilter, setNoteTypeFilter] = useState('all');
+  // Add state for dropdown modal
+  const [filterDropdownVisible, setFilterDropdownVisible] = useState(false);
+  // Add state for search modal and query
+  const [searchModalVisible, setSearchModalVisible] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
 
   // --- AUDIO MODAL STATE ---
   const [audioModalVisible, setAudioModalVisible] = useState(false);
@@ -441,6 +458,8 @@ export default function App() {
         ref={ref => { if (ref) swipeableRefs.current[thought.id] = ref; }}
         renderLeftActions={() => renderLeftActions(thought, isPinned)}
         renderRightActions={() => renderRightActions(thought)}
+        leftThreshold={SWIPE_ACTION_WIDTH}
+        rightThreshold={SWIPE_ACTION_WIDTH}
         overshootLeft={false}
         overshootRight={false}
       >
@@ -595,29 +614,49 @@ export default function App() {
     toastTimeout.current = setTimeout(() => setToast(null), 2500);
   }
 
-  // Render swipe actions
+  // Update renderLeftActions to use black/white backgrounds and colored text
   const renderLeftActions = (note, isPinned) => (
-    <RectButton style={{ backgroundColor: isPinned ? '#888' : '#007bff', justifyContent: 'center', flex: 1 }} onPress={() => isPinned ? handleUnpin(note) : handlePin(note)}>
-      <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 18, paddingLeft: 24 }}>{isPinned ? 'Unpin' : '📌 Pin'}</Text>
-    </RectButton>
+    <View style={{
+      flexDirection: 'row',
+      width: SWIPE_ACTION_WIDTH,
+      height: CARD_HEIGHT,
+      borderRadius: CARD_BORDER_RADIUS,
+      overflow: 'hidden',
+      marginVertical: 0, // match card margin if any
+    }}>
+      <RectButton
+        style={{ backgroundColor: '#000', justifyContent: 'center', alignItems: 'center', flex: 1, height: '100%' }}
+        onPress={() => isPinned ? handleUnpin(note) : handlePin(note)}
+      >
+        <Text style={{ color: '#007bff', fontWeight: 'bold', fontSize: 18 }}>{isPinned ? 'Unpin' : '📌 Pin'}</Text>
+      </RectButton>
+      <RectButton
+        style={{ backgroundColor: '#fff', justifyContent: 'center', alignItems: 'center', flex: 1, height: '100%' }}
+        onPress={() => handleHide(note)}
+      >
+        <Text style={{ color: '#8B4513', fontWeight: 'bold', fontSize: 18 }}>🙈 Hide</Text>
+      </RectButton>
+    </View>
   );
+  // Update renderRightActions to use SWIPE_ACTION_WIDTH and black background, red text
   const renderRightActions = (note) => (
-    <RectButton
-      style={{ backgroundColor: '#dc3545', justifyContent: 'center', alignItems: 'center', flex: 1, flexDirection: 'row' }}
-      onPress={() => {
-        Alert.alert(
-          'Delete Note',
-          'Are you sure you want to delete this note? This cannot be undone.',
-          [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Delete', style: 'destructive', onPress: () => handleDelete(note) },
-          ]
-        );
-      }}
-    >
-      <Text style={{ fontSize: 22, marginRight: 8 }}>🗑️</Text>
-      <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 18 }}>Delete</Text>
-    </RectButton>
+    <View style={{ flexDirection: 'row', width: SWIPE_ACTION_WIDTH, height: '100%' }}>
+      <RectButton
+        style={{ backgroundColor: '#000', justifyContent: 'center', alignItems: 'center', flex: 1 }}
+        onPress={() => {
+          Alert.alert(
+            'Delete Note',
+            'Are you sure you want to delete this note? This cannot be undone.',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Delete', style: 'destructive', onPress: () => handleDelete(note) },
+            ]
+          );
+        }}
+      >
+        <Text style={{ color: '#ff3b30', fontWeight: 'bold', fontSize: 18 }}>Delete</Text>
+      </RectButton>
+    </View>
   );
 
   // save last input mode to storage whenever it changes
@@ -765,99 +804,88 @@ export default function App() {
   // Replace the old Record modal logic with: onPress={openAudioModal} for the Record tab.
   // When posting a note, use voiceNoteDrafts as before.
 
+  // Add state for selected tab
+  // const [selectedTab, setSelectedTab] = useState('write'); // Removed
+
   // 1. home screen: show only header and three input mode tabs
   // 2. when a tab is tapped, open a full-screen modal/page for that mode
   // 3. each full-screen mode has its own page with a 'Done' button
   // 4. remove inline input, drawing, and recording controls from home
   // 5. only one mode visible at a time; main stream only on home
+
+  // Filter notes based on noteTypeFilter
+  const getFilteredNotes = () => {
+    const allNotes = dedupeNotes([...pinnedNotes, ...thoughts]).filter(n => !n.hidden);
+    if (noteTypeFilter === 'all') return allNotes;
+    if (noteTypeFilter === 'voice') {
+      return allNotes.filter(
+        note => (note.voiceNotes && note.voiceNotes.length > 0) || note.uri // support both array and single uri
+      );
+    }
+    if (noteTypeFilter === 'handdrawn') {
+      return allNotes.filter(
+        note => note.drawingImageUri || note.drawing // support both image uri and drawing data
+      );
+    }
+    return allNotes;
+  };
+
+  // Add handleHide function
+  function handleHide(note) {
+    // Set hidden property and update notes
+    setThoughts(prev => {
+      const updated = prev.map(n => n.id === note.id ? { ...n, hidden: true } : n);
+      saveThoughts(updated);
+      return updated;
+    });
+    setPinnedNotes(prev => prev.map(n => n.id === note.id ? { ...n, hidden: true } : n));
+    closeSwipeable(note.id);
+  }
+
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1, backgroundColor: '#f7efe7' }}>
         <StatusBar style="auto" />
-        {/* 1. greeting header */}
-        <View style={styles.topSection}>
-          <View style={styles.headerRow}>
-            <Text style={styles.greetingText}>Welcome, Nnya</Text>
-            {/* Simple avatar illustration (replace with your own image if desired) */}
-            <View style={styles.avatarContainer}>
-              <MaterialCommunityIcons name="account-outline" size={40} color="#222" />
-            </View>
-          </View>
-          <View style={styles.inputModeCardsRow}>
-            <TouchableOpacity style={styles.inputModeCard} onPress={handleStartTyping}>
-              <Feather name="pen-tool" size={32} color="#222" style={{ marginBottom: 8 }} />
-              <Text style={styles.inputModeCardLabel}>Write</Text>
+        {/* Top bar with centered title and icons */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 16, marginBottom: 8 }}>
+          <View style={{ width: 32 }} /> {/* Spacer for symmetry */}
+          <Text style={{ fontSize: 22, fontWeight: 'bold', textAlign: 'center', flex: 1, fontFamily: 'Georgia' }}>Lao Note</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+            <TouchableOpacity style={{ marginRight: 8 }} onPress={() => setSearchModalVisible(true)}>
+              <Feather name="search" size={24} color="#222" />
             </TouchableOpacity>
-            <TouchableOpacity style={styles.inputModeCard} onPress={handleStartDrawing}>
-              <MaterialCommunityIcons name="brush-variant" size={32} color="#222" style={{ marginBottom: 8 }} />
-              <Text style={styles.inputModeCardLabel}>Draw</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.inputModeCard} onPress={openAudioModal}>
-              <FontAwesome name="microphone" size={32} color="#222" style={{ marginBottom: 8 }} />
-              <Text style={styles.inputModeCardLabel}>Record</Text>
+            <TouchableOpacity>
+              <MaterialCommunityIcons name="lock-outline" size={26} color="#222" />
             </TouchableOpacity>
           </View>
         </View>
-        {/* 3. input box styled as a card */}
-        {/* The inline input area, drawing area, and recording controls are removed from the home screen. */}
-        {/* The main stream is only visible on the home screen. */}
-        {/* The full-screen modals for typing, drawing, and recording are handled by the new handlers. */}
-
-        {/* Fullscreen Drawing Overlay */}
-        {isDrawingFullscreen && (
-          <View style={styles.fullscreenOverlay}>
-            <View style={styles.fullscreenHeader}>
-              <TouchableOpacity
-                style={[styles.clearButton, { backgroundColor: '#212529', marginRight: 8 }]}
-                onPress={() => setIsDrawingFullscreen(false)}
-              >
-                <Text style={{ color: '#fff', fontSize: 14, fontWeight: '600' }}>Back</Text>
-              </TouchableOpacity>
-              <Text style={[styles.drawingTitle, { color: '#fff', flex: 1, textAlign: 'center' }]}>🖍️ Fullscreen Drawing</Text>
-              {/* Save button to add drawing to stream */}
-              <TouchableOpacity
-                style={[styles.clearButton, { backgroundColor: '#28a745', marginLeft: 8 }]}
-                onPress={async () => {
-                  await addThought();
-                  setIsDrawingFullscreen(false);
-                  setIsDrawing(false); // Optionally close drawing mode after save
-                }}
-              >
-                <Text style={{ color: '#fff', fontSize: 14, fontWeight: '600' }}>Save</Text>
-              </TouchableOpacity>
+        {/* Segmented control/tab bar for Write, Record, Draw (just triggers modal/page) */}
+        <View style={{ flexDirection: 'row', backgroundColor: '#f5f5f5', borderRadius: 16, marginHorizontal: 16, marginBottom: 12, padding: 4, justifyContent: 'center' }}>
+          <TouchableOpacity
+            style={{ flex: 1, alignItems: 'center' }}
+            onPress={() => setIsTyping(true)}
+          >
+            <View style={{ backgroundColor: '#222', borderRadius: 12, paddingVertical: 6, paddingHorizontal: 18 }}>
+              <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 16 }}>Write</Text>
             </View>
-            <View style={styles.fullscreenCanvasContainer}>
-              <DrawingCanvas
-                ref={drawingRef}
-                style={{ width: FULLSCREEN_CANVAS_WIDTH, height: FULLSCREEN_CANVAS_HEIGHT, backgroundColor: '#fff', borderRadius: 12, borderWidth: 1, borderColor: '#dee2e6' }}
-              />
-              {/* Hidden SVG for export, matches fullscreen size */}
-              <View
-                ref={svgCaptureRef}
-                style={{ position: 'absolute', left: -1000, width: FULLSCREEN_CANVAS_WIDTH, height: FULLSCREEN_CANVAS_HEIGHT, backgroundColor: '#fff' }}
-                collapsable={false}
-              >
-                <Svg width={FULLSCREEN_CANVAS_WIDTH} height={FULLSCREEN_CANVAS_HEIGHT}>
-                  {currentDrawing.map((d, idx) => (
-                    <Path key={idx} d={d} stroke="#000" strokeWidth={2} fill="none" />
-                  ))}
-                </Svg>
-              </View>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={{ flex: 1, alignItems: 'center' }}
+            onPress={() => setAudioModalVisible(true)}
+          >
+            <View style={{ backgroundColor: 'transparent', borderRadius: 12, paddingVertical: 6, paddingHorizontal: 18 }}>
+              <Text style={{ color: '#888', fontWeight: 'bold', fontSize: 16 }}>Record</Text>
             </View>
-          </View>
-        )}
-        {/* Fullscreen Photo Overlay */}
-        {fullscreenPhoto && (
-          <View style={styles.fullscreenPhotoOverlay}>
-            <TouchableOpacity style={styles.fullscreenPhotoClose} onPress={() => setFullscreenPhoto(null)}>
-              <Text style={{ color: '#fff', fontSize: 28, fontWeight: 'bold' }}>×</Text>
-            </TouchableOpacity>
-            <Image source={{ uri: fullscreenPhoto }} style={styles.fullscreenPhoto} resizeMode="contain" />
-            <TouchableOpacity style={styles.savePhotoButton} onPress={() => handleSavePhoto(fullscreenPhoto)} disabled={savingPhoto}>
-              <Text style={{ color: '#fff', fontSize: 18, fontWeight: 'bold' }}>{savingPhoto ? 'Saving...' : 'Save to device'}</Text>
-            </TouchableOpacity>
-          </View>
-        )}
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={{ flex: 1, alignItems: 'center' }}
+            onPress={() => setIsDrawing(true)}
+          >
+            <View style={{ backgroundColor: 'transparent', borderRadius: 12, paddingVertical: 6, paddingHorizontal: 18 }}>
+              <Text style={{ color: '#888', fontWeight: 'bold', fontSize: 16 }}>Draw</Text>
+            </View>
+          </TouchableOpacity>
+        </View>
         {/* Toast notification */}
         {toast && (
           <View style={styles.toast}>
@@ -989,19 +1017,106 @@ export default function App() {
             </View>
           </SafeAreaView>
         </Modal>
+        {/* Dropdown modal */}
+        <Modal
+          visible={filterDropdownVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setFilterDropdownVisible(false)}
+        >
+          <TouchableOpacity style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.15)' }} activeOpacity={1} onPressOut={() => setFilterDropdownVisible(false)}>
+            <View style={{ position: 'absolute', right: 24, top: 110, backgroundColor: '#fff', borderRadius: 10, elevation: 5, shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 8, paddingVertical: 8, minWidth: 150 }}>
+              <TouchableOpacity style={{ padding: 12 }} onPress={() => { setNoteTypeFilter('all'); setFilterDropdownVisible(false); }}>
+                <Text style={{ fontSize: 16, color: noteTypeFilter === 'all' ? '#222' : '#555' }}>All Notes</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={{ padding: 12 }} onPress={() => { setNoteTypeFilter('voice'); setFilterDropdownVisible(false); }}>
+                <Text style={{ fontSize: 16, color: noteTypeFilter === 'voice' ? '#222' : '#555' }}>Voice Notes</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={{ padding: 12 }} onPress={() => { setNoteTypeFilter('handdrawn'); setFilterDropdownVisible(false); }}>
+                <Text style={{ fontSize: 16, color: noteTypeFilter === 'handdrawn' ? '#222' : '#555' }}>Handdrawn Notes</Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </Modal>
+        {/* Replace the List Notes label and dropdown with a custom dropdown */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginHorizontal: 16, marginBottom: 8 }}>
+          <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#222' }}>List Notes</Text>
+          <TouchableOpacity
+            style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 }}
+            onPress={() => setFilterDropdownVisible(true)}
+            activeOpacity={0.7}
+          >
+            <Text style={{ fontSize: 16, color: '#222', marginRight: 4 }}>
+              {noteTypeFilter === 'all' ? 'All Notes' : noteTypeFilter === 'voice' ? 'Voice Notes' : 'Handdrawn Notes'}
+            </Text>
+            <AntDesign name="down" size={16} color="#222" />
+          </TouchableOpacity>
+        </View>
         {/* restore the notes stream to a simple, chronological vertical list (twitter-like) */}
         {!(isTyping || isDrawing || isRecording) && (
           <ScrollView style={{ flex: 1, backgroundColor: '#f7efe7' }} contentContainerStyle={{ padding: 0 }}>
-            {Object.entries(groupNotesByDate(dedupeNotes([...pinnedNotes, ...thoughts]))).map(([section, notes]) => (
+            {Object.entries(groupNotesByDate(getFilteredNotes())).map(([section, notes]) => (
               notes.length > 0 && (
                 <View key={section}>
                   <Text style={styles.sectionHeader}>{sectionLabels[section]}</Text>
-                  {notes.map(note => renderThoughtCard(note))}
+                  {notes.map(note => (
+                    <View key={note.id || note.timestamp}>
+                      {renderThoughtCard(note)}
+                    </View>
+                  ))}
                 </View>
               )
             ))}
           </ScrollView>
         )}
+        {/* Search modal implementation */}
+        <Modal
+          visible={searchModalVisible}
+          animationType="slide"
+          onRequestClose={() => setSearchModalVisible(false)}
+        >
+          <SafeAreaView style={{ flex: 1, backgroundColor: '#f7efe7' }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', padding: 16 }}>
+              <TextInput
+                style={{ flex: 1, fontSize: 18, backgroundColor: '#fff', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1, borderColor: '#ccc' }}
+                placeholder="Search notes..."
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                autoFocus
+              />
+              <TouchableOpacity onPress={() => setSearchModalVisible(false)} style={{ marginLeft: 12 }}>
+                <Text style={{ fontSize: 18, color: '#222', fontWeight: 'bold' }}>Close</Text>
+              </TouchableOpacity>
+            </View>
+            <ScrollView style={{ flex: 1, backgroundColor: '#f7efe7' }} contentContainerStyle={{ padding: 0 }}>
+              {(() => {
+                // Filter notes based on search query
+                const query = searchQuery.trim().toLowerCase();
+                if (!query) return null;
+                let filtered = dedupeNotes([...pinnedNotes, ...thoughts]).filter(note => {
+                  if (query.split(' ').length === 1) {
+                    // Vague search: mood, emoji, or text
+                    const moodMatch = typeof note.mood === 'string' && note.mood.toLowerCase() === query;
+                    const emojiMatch = (note.mood === '😊' || (typeof note.mood === 'string' && note.mood.toLowerCase() === 'happy')) && query === 'happy';
+                    const textMatch = note.text && note.text.toLowerCase().includes(query);
+                    return moodMatch || emojiMatch || textMatch;
+                  } else {
+                    // Dedicated search: text contains full query
+                    return note.text && note.text.toLowerCase().includes(query);
+                  }
+                });
+                if (filtered.length === 0) {
+                  return <Text style={{ textAlign: 'center', marginTop: 32, color: '#888', fontSize: 18 }}>No notes found.</Text>;
+                }
+                return filtered.map(note => (
+                  <View key={note.id || note.timestamp}>
+                    {renderThoughtCard(note)}
+                  </View>
+                ));
+              })()}
+            </ScrollView>
+          </SafeAreaView>
+        </Modal>
       </SafeAreaView>
     </GestureHandlerRootView>
   );
