@@ -6,13 +6,15 @@ import { View, PanResponder } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
 
 // main drawing canvas function
-const DrawingCanvas = React.forwardRef(({ style, initialPaths = [], onDrawingChange }, ref) => {
+const DrawingCanvas = React.forwardRef(({ style, initialPaths = [], onDrawingChange, onCanvasLayout }, ref) => {
   // paths is a list of all lines you have drawn
   const [paths, setPaths] = useState(initialPaths);
   // currentPath is the line you are drawing right now (use ref for reliability)
   const currentPath = useRef('');
   // add state to force re-render for current path
   const [currentPathForRender, setCurrentPathForRender] = useState('');
+  // canvas dimensions
+  const [canvasDimensions, setCanvasDimensions] = useState({ width: 0, height: 0 });
 
   // update paths if initialPaths changes (e.g., modal reopened)
   useEffect(() => {
@@ -75,13 +77,23 @@ const DrawingCanvas = React.forwardRef(({ style, initialPaths = [], onDrawingCha
   useImperativeHandle(ref, () => ({
     clear: () => setPaths([]),
     getPaths: () => paths,
-  }), [paths]);
+    getCanvasDimensions: () => canvasDimensions,
+  }), [paths, canvasDimensions]);
+
+  // handle canvas layout to get dimensions
+  const handleCanvasLayout = (event) => {
+    const { width, height } = event.nativeEvent.layout;
+    setCanvasDimensions({ width, height });
+    if (onCanvasLayout) {
+      onCanvasLayout({ width, height });
+    }
+  };
 
   return (
     // the main view for the drawing area
     <View style={style} {...panResponder.panHandlers}>
       {/* svg is used to actually draw the lines on the screen */}
-      <Svg style={{ flex: 1 }}>
+      <Svg style={{ flex: 1 }} onLayout={handleCanvasLayout}>
         {paths.map((d, i) => (
           // each path is a line you drew
           <Path key={i} d={d} stroke="#222" strokeWidth={2} fill="none" />
