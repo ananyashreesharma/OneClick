@@ -109,6 +109,19 @@ export default function App() {
   const [recordingTitle, setRecordingTitle] = useState('');
   const recordingInterval = useRef(null);
 
+  // SuperNote state
+  const [superNoteModalVisible, setSuperNoteModalVisible] = useState(false);
+  const [superNoteText, setSuperNoteText] = useState('');
+  const [superNoteDrawing, setSuperNoteDrawing] = useState([]);
+  const [superNoteRecording, setSuperNoteRecording] = useState(null);
+  const [superNoteIsRecording, setSuperNoteIsRecording] = useState(false);
+  const [superNoteRecordingDuration, setSuperNoteRecordingDuration] = useState(0);
+  const [superNoteRecordedUri, setSuperNoteRecordedUri] = useState(null);
+  const [superNoteIsPaused, setSuperNoteIsPaused] = useState(false);
+  const [superNoteDrawingDimensions, setSuperNoteDrawingDimensions] = useState({ width: 0, height: 0 });
+  const superNoteDrawingRef = useRef(null);
+  const superNoteRecordingInterval = useRef(null);
+
   const moods = [
     { emoji: '😊', name: 'happy', color: '#FFE5B4' },
     { emoji: '😢', name: 'sad', color: '#E3F2FD' },
@@ -126,6 +139,15 @@ export default function App() {
     loadPrivateNotes();
     loadPinnedNotes();
     setupAudio();
+  }, []);
+
+  // Cleanup SuperNote recording interval on unmount
+  useEffect(() => {
+    return () => {
+      if (superNoteRecordingInterval.current) {
+        clearInterval(superNoteRecordingInterval.current);
+      }
+    };
   }, []);
 
   // Cleanup audio on unmount
@@ -391,26 +413,18 @@ export default function App() {
   const addThought = async (newThought) => {
     if (!newThought) return;
     
-    console.log('addThought called with:', newThought);
-    
-    const thought = {
+    const thoughtWithId = {
+      ...newThought,
       id: newThought.id || generateUniqueId(),
       timestamp: newThought.timestamp || new Date().toISOString(),
-      text: newThought.text || '',
-      drawingPaths: newThought.drawingData || [],
-      drawingDimensions: newThought.drawingDimensions || { width: 300, height: 200 },
-      voiceNotes: newThought.voiceNotes || [],
-      mood: newThought.mood || currentMood,
+      originalTimestamp: newThought.timestamp || new Date().toISOString(), // Preserve original timestamp
+      isPinned: false, // New notes start unpinned
+      pinTimestamp: null // No pin timestamp initially
     };
 
-    console.log('Created thought object:', thought);
-    const updatedThoughts = [thought, ...thoughts];
+    const updatedThoughts = [thoughtWithId, ...thoughts];
     setThoughts(updatedThoughts);
     await saveThoughts(updatedThoughts);
-    
-    setCurrentThought('');
-    setCurrentMood(null);
-    setDrawingData([]);
   };
 
   function dedupeNotes(notes) {
@@ -559,8 +573,207 @@ export default function App() {
     try {
       await AsyncStorage.setItem('pinnedNotes', JSON.stringify(notes));
     } catch (error) {
-      console.log('Error saving pinned notes:', error);
+      console.error('Error saving pinned notes:', error);
     }
+  };
+
+  // SuperNote functions
+  const handleSuperNoteStartRecording = async () => {
+    try {
+      console.log('Starting SuperNote recording...');
+      await setupAudio();
+      const { recording } = await Audio.Recording.createAsync(
+        Audio.RecordingOptionsPresets.LOW_QUALITY
+      );
+      setSuperNoteRecording(recording);
+      setSuperNoteIsRecording(true);
+      setSuperNoteRecordingDuration(0);
+      setSuperNoteIsPaused(false);
+      
+      // Start timer
+      superNoteRecordingInterval.current = setInterval(() => {
+        setSuperNoteRecordingDuration(prev => prev + 1);
+      }, 1000);
+      console.log('SuperNote recording started successfully');
+    } catch (error) {
+      console.error('Error starting SuperNote recording:', error);
+    }
+  };
+
+  const handleSuperNotePauseRecording = async () => {
+    try {
+      if (superNoteRecording) {
+        await superNoteRecording.pauseAsync();
+        setSuperNoteIsPaused(true);
+        if (superNoteRecordingInterval.current) {
+          clearInterval(superNoteRecordingInterval.current);
+        }
+      }
+    } catch (error) {
+      console.error('Error pausing SuperNote recording:', error);
+    }
+  };
+
+  const handleSuperNoteResumeRecording = async () => {
+    try {
+      if (superNoteRecording) {
+        await superNoteRecording.startAsync();
+        setSuperNoteIsPaused(false);
+        superNoteRecordingInterval.current = setInterval(() => {
+          setSuperNoteRecordingDuration(prev => prev + 1);
+        }, 1000);
+      }
+    } catch (error) {
+      console.error('Error resuming SuperNote recording:', error);
+    }
+  };
+
+  const handleSuperNoteStopRecording = async () => {
+    try {
+      console.log('Stopping SuperNote recording...');
+      if (superNoteRecording) {
+        await superNoteRecording.stopAndUnloadAsync();
+        const uri = superNoteRecording.getURI();
+        console.log('SuperNote recording stopped, URI:', uri);
+        setSuperNoteRecordedUri(uri);
+        setSuperNoteIsRecording(false);
+        setSuperNoteIsPaused(false);
+        if (superNoteRecordingInterval.current) {
+          clearInterval(superNoteRecordingInterval.current);
+          superNoteRecordingInterval.current = null;
+        }
+        setSuperNoteRecording(null);
+        console.log('SuperNote recording state reset successfully');
+      }
+    } catch (error) {
+      console.error('Error stopping SuperNote recording:', error);
+      // Reset state even if there's an error
+      setSuperNoteIsRecording(false);
+      setSuperNoteIsPaused(false);
+      if (superNoteRecordingInterval.current) {
+        clearInterval(superNoteRecordingInterval.current);
+        superNoteRecordingInterval.current = null;
+      }
+      setSuperNoteRecording(null);
+    }
+  };
+
+  const handleSuperNoteSave = async () => {
+    if (!superNoteText.trim() && superNoteDrawing.length === 0 && !superNoteRecordedUri) {
+      Alert.alert('Empty Note', 'Please add some content before saving.');
+      return;
+    }
+
+    const superNote = {
+      id: generateUniqueId(),
+      text: superNoteText.trim(),
+      drawingPaths: superNoteDrawing,
+      drawingDimensions: superNoteDrawingDimensions,
+      voiceNotes: superNoteRecordedUri ? [{
+        uri: superNoteRecordedUri,
+        duration: superNoteRecordingDuration * 1000,
+        timestamp: new Date().toISOString()
+      }] : [],
+      timestamp: new Date().toISOString(),
+      originalTimestamp: new Date().toISOString(), // Preserve original timestamp
+      type: 'supernote',
+      isPinned: false, // New SuperNotes start unpinned
+      pinTimestamp: null // No pin timestamp initially
+    };
+
+    console.log('Saving SuperNote:', superNote);
+
+    const updatedThoughts = [superNote, ...thoughts];
+    setThoughts(updatedThoughts);
+    await saveThoughts(updatedThoughts);
+
+    // Reset SuperNote state
+    setSuperNoteText('');
+    setSuperNoteDrawing([]);
+    setSuperNoteRecording(null);
+    setSuperNoteIsRecording(false);
+    setSuperNoteRecordingDuration(0);
+    setSuperNoteRecordedUri(null);
+    setSuperNoteIsPaused(false);
+    setSuperNoteDrawingDimensions({ width: 0, height: 0 });
+    setSuperNoteModalVisible(false);
+
+    setToast('SuperNote saved! 🚀');
+    if (toastTimeout.current) clearTimeout(toastTimeout.current);
+    toastTimeout.current = setTimeout(() => setToast(null), 2000);
+  };
+
+  const handleSuperNoteCancel = () => {
+    // Stop recording if active
+    if (superNoteIsRecording) {
+      if (superNoteRecording) {
+        superNoteRecording.stopAndUnloadAsync().catch(console.error);
+      }
+      if (superNoteRecordingInterval.current) {
+        clearInterval(superNoteRecordingInterval.current);
+        superNoteRecordingInterval.current = null;
+      }
+    }
+    
+    // Reset all SuperNote state
+    setSuperNoteText('');
+    setSuperNoteDrawing([]);
+    setSuperNoteRecording(null);
+    setSuperNoteIsRecording(false);
+    setSuperNoteRecordingDuration(0);
+    setSuperNoteRecordedUri(null);
+    setSuperNoteIsPaused(false);
+    setSuperNoteDrawingDimensions({ width: 0, height: 0 });
+    setSuperNoteModalVisible(false);
+  };
+
+  const handleSuperNoteDrawingChange = (paths) => {
+    setSuperNoteDrawing(paths);
+  };
+
+  const handleSuperNoteCanvasLayout = (dimensions) => {
+    if (dimensions && dimensions.width && dimensions.height) {
+      setSuperNoteDrawingDimensions(dimensions);
+    }
+  };
+
+  // Function to sort notes: pinned at top, unpinned in chronological order
+  const getSortedThoughts = () => {
+    const pinnedNotes = thoughts.filter(thought => thought.isPinned);
+    const unpinnedNotes = thoughts.filter(thought => !thought.isPinned);
+    
+    // Sort pinned notes by pin timestamp (most recently pinned first)
+    const sortedPinnedNotes = pinnedNotes.sort((a, b) => {
+      const aPinTime = a.pinTimestamp || a.timestamp;
+      const bPinTime = b.pinTimestamp || b.timestamp;
+      return new Date(bPinTime) - new Date(aPinTime);
+    });
+    
+    // Sort unpinned notes by original timestamp (newest first)
+    const sortedUnpinnedNotes = unpinnedNotes.sort((a, b) => {
+      return new Date(b.timestamp) - new Date(a.timestamp);
+    });
+    
+    return [...sortedPinnedNotes, ...sortedUnpinnedNotes];
+  };
+
+  // Function to handle pinning/unpinning with position tracking
+  const handlePinToggle = (thoughtId) => {
+    const updatedThoughts = thoughts.map(thought => {
+      if (thought.id === thoughtId) {
+        const isCurrentlyPinned = thought.isPinned;
+        return {
+          ...thought,
+          isPinned: !isCurrentlyPinned,
+          pinTimestamp: !isCurrentlyPinned ? new Date().toISOString() : null, // Track when pinned
+          originalTimestamp: thought.originalTimestamp || thought.timestamp // Preserve original position
+        };
+      }
+      return thought;
+    });
+    
+    setThoughts(updatedThoughts);
+    saveThoughts(updatedThoughts);
   };
 
   return (
@@ -644,6 +857,38 @@ export default function App() {
             </Animated.View>
           </Animated.View>
         )}
+
+        {/* Toast Notification */}
+        {toast && (
+          <Animated.View
+            style={{
+              position: 'absolute',
+              top: 100,
+              left: 20,
+              right: 20,
+              backgroundColor: '#FF6B6B',
+              paddingHorizontal: 20,
+              paddingVertical: 12,
+              borderRadius: 25,
+              zIndex: 1001,
+              shadowColor: '#000',
+              shadowOffset: { width: 0, height: 4 },
+              shadowOpacity: 0.3,
+              shadowRadius: 8,
+              elevation: 8,
+            }}
+          >
+            <Text style={{
+              color: '#fff',
+              fontSize: 16,
+              fontWeight: '600',
+              textAlign: 'center',
+              fontFamily: 'Georgia',
+            }}>
+              {toast}
+            </Text>
+          </Animated.View>
+        )}
         
         {/* Header */}
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 16, marginBottom: 8 }}>
@@ -710,90 +955,127 @@ export default function App() {
           </TouchableOpacity>
         </View>
 
+        {/* SuperNote Floating Action Button */}
+        <TouchableOpacity
+          style={{
+            position: 'absolute',
+            bottom: 30,
+            right: 20,
+            width: 60,
+            height: 60,
+            borderRadius: 30,
+            backgroundColor: '#FF6B6B',
+            justifyContent: 'center',
+            alignItems: 'center',
+            shadowColor: '#000',
+            shadowOffset: { width: 0, height: 4 },
+            shadowOpacity: 0.3,
+            shadowRadius: 8,
+            elevation: 8,
+            zIndex: 100,
+          }}
+          onPress={() => setSuperNoteModalVisible(true)}
+        >
+          <Text style={{ fontSize: 24, color: '#fff', fontWeight: 'bold' }}>🚀</Text>
+        </TouchableOpacity>
+
         {/* Notes list */}
         {!(isTyping || isDrawing) && (
           <ScrollView style={{ flex: 1, backgroundColor: '#f7efe7' }} contentContainerStyle={{ padding: 16 }}>
             {thoughts.length === 0 ? (
               <Text style={{ padding: 20, textAlign: 'center', color: '#666' }}>Your notes will appear here</Text>
             ) : (
-              thoughts.map((thought, index) => {
+              getSortedThoughts().map((thought, index) => {
                 console.log('Rendering thought:', thought);
+                const sortedThoughts = getSortedThoughts();
+                const isFirstUnpinned = !thought.isPinned && 
+                  (index === 0 || (index > 0 && sortedThoughts[index - 1].isPinned));
+                
                 return (
-                  <Swipeable
-                    key={thought.id || index}
-                    renderRightActions={() => (
-                      <View style={styles.swipeRightActions}>
-                        <TouchableOpacity
-                          style={[styles.swipeAction, styles.pinAction]}
-                          onPress={() => {
-                            const updatedThoughts = thoughts.map(t => 
-                              t.id === thought.id ? { ...t, isPinned: !t.isPinned } : t
-                            );
-                            setThoughts(updatedThoughts);
-                            saveThoughts(updatedThoughts);
-                          }}
-                        >
-                          <Feather 
-                            name={thought.isPinned ? "unlock" : "lock"} 
-                            size={20} 
-                            color="#fff" 
-                          />
-                          <Text style={styles.swipeActionText}>
-                            {thought.isPinned ? "Unpin" : "Pin"}
-                          </Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                          style={[styles.swipeAction, styles.hideAction]}
-                          onPress={() => {
-                            // Calculate the note's position in the stream
-                            const notePosition = { x: 20, y: 100 + (index * 200) }; // Approximate position based on index
-                            handleScoopNote(thought, notePosition);
-                          }}
-                        >
-                          <Feather name="eye-off" size={20} color="#fff" />
-                          <Text style={styles.swipeActionText}>Hide</Text>
-                        </TouchableOpacity>
+                  <React.Fragment key={thought.id || index}>
+                    {/* Separator between pinned and unpinned notes */}
+                    {isFirstUnpinned && (
+                      <View style={styles.notesSeparator}>
+                        <View style={styles.separatorLine} />
+                        <Text style={styles.separatorText}>Recent Notes</Text>
+                        <View style={styles.separatorLine} />
                       </View>
                     )}
-                    renderLeftActions={() => (
-                      <View style={styles.swipeLeftActions}>
-                        <TouchableOpacity
-                          style={[styles.swipeAction, styles.deleteAction]}
-                          onPress={() => {
-                            Alert.alert(
-                              "Delete Note",
-                              "Are you sure you want to delete this note?",
-                              [
-                                { text: "Cancel", style: "cancel" },
-                                {
-                                  text: "Delete",
-                                  style: "destructive",
-                                  onPress: () => {
-                                    const updatedThoughts = thoughts.filter(t => t.id !== thought.id);
-                                    setThoughts(updatedThoughts);
-                                    saveThoughts(updatedThoughts);
-                                  }
-                                }
-                              ]
-                            );
-                          }}
-                        >
-                          <Feather name="trash-2" size={20} color="#fff" />
-                          <Text style={styles.swipeActionText}>Delete</Text>
-                        </TouchableOpacity>
-                      </View>
-                    )}
-                    rightThreshold={70}
-                    leftThreshold={70}
-                  >
-                                        <View style={styles.noteCard}>
-                      {thought.isPinned && (
-                        <View style={styles.pinnedIndicator}>
-                          <Feather name="lock" size={12} color={KINDLE_ACCENT} />
-                          <Text style={styles.pinnedText}>Pinned</Text>
+                    
+                    <Swipeable
+                      renderRightActions={() => (
+                        <View style={styles.swipeRightActions}>
+                          <TouchableOpacity
+                            style={[styles.swipeAction, styles.pinAction]}
+                            onPress={() => handlePinToggle(thought.id)}
+                          >
+                            <Feather 
+                              name={thought.isPinned ? "unlock" : "lock"} 
+                              size={20} 
+                              color="#fff" 
+                            />
+                            <Text style={styles.swipeActionText}>
+                              {thought.isPinned ? "Unpin" : "Pin"}
+                            </Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={[styles.swipeAction, styles.hideAction]}
+                            onPress={() => {
+                              // Calculate the note's position in the stream
+                              const notePosition = { x: 20, y: 100 + (index * 200) }; // Approximate position based on index
+                              handleScoopNote(thought, notePosition);
+                            }}
+                          >
+                            <Feather name="eye-off" size={20} color="#fff" />
+                            <Text style={styles.swipeActionText}>Hide</Text>
+                          </TouchableOpacity>
                         </View>
                       )}
-                      <Text style={styles.noteText}>{thought.text}</Text>
+                      renderLeftActions={() => (
+                        <View style={styles.swipeLeftActions}>
+                          <TouchableOpacity
+                            style={[styles.swipeAction, styles.deleteAction]}
+                            onPress={() => {
+                              Alert.alert(
+                                "Delete Note",
+                                "Are you sure you want to delete this note?",
+                                [
+                                  { text: "Cancel", style: "cancel" },
+                                  {
+                                    text: "Delete",
+                                    style: "destructive",
+                                    onPress: () => {
+                                      const updatedThoughts = thoughts.filter(t => t.id !== thought.id);
+                                      setThoughts(updatedThoughts);
+                                      saveThoughts(updatedThoughts);
+                                    }
+                                  }
+                                ]
+                              );
+                            }}
+                          >
+                            <Feather name="trash-2" size={20} color="#fff" />
+                            <Text style={styles.swipeActionText}>Delete</Text>
+                          </TouchableOpacity>
+                        </View>
+                      )}
+                      rightThreshold={70}
+                      leftThreshold={70}
+                    >
+                      <View style={styles.noteCard}>
+                        {thought.isPinned && (
+                          <View style={styles.pinnedIndicator}>
+                            <Feather name="lock" size={12} color={KINDLE_ACCENT} />
+                            <Text style={styles.pinnedText}>Pinned</Text>
+                          </View>
+                        )}
+                        {thought.type === 'supernote' && (
+                          <View style={styles.superNoteIndicator}>
+                            <Text style={styles.superNoteIndicatorEmoji}>🚀</Text>
+                            <Text style={styles.superNoteIndicatorText}>SuperNote</Text>
+                          </View>
+                        )}
+                        <Text style={styles.noteText}>{thought.text}</Text>
                     {thought.drawingPaths && thought.drawingPaths.length > 0 && (
                       <View style={styles.drawingDisplay}>
                         <Svg 
@@ -871,6 +1153,7 @@ export default function App() {
                   <Text style={styles.noteTime}>{new Date(thought.timestamp).toLocaleString()}</Text>
                 </View>
                   </Swipeable>
+                  </React.Fragment>
               );
             })
             )}
@@ -1135,6 +1418,141 @@ export default function App() {
                 <Text style={{ color: '#fff', textAlign: 'center', padding: 20 }}>Private notes will appear here</Text>
               )}
             </ScrollView>
+          </SafeAreaView>
+        </Modal>
+
+        {/* SuperNote Modal */}
+        <Modal
+          visible={superNoteModalVisible}
+          animationType="slide"
+          presentationStyle="fullScreen"
+        >
+          <SafeAreaView style={styles.container}>
+            <StatusBar style="auto" />
+            
+            {/* SuperNote Header */}
+            <View style={styles.superNoteHeader}>
+              <TouchableOpacity onPress={handleSuperNoteCancel} style={styles.headerButton}>
+                <Text style={styles.headerButtonText}>Cancel</Text>
+              </TouchableOpacity>
+              <Text style={styles.superNoteTitle}>SuperNote 🚀</Text>
+              <TouchableOpacity onPress={handleSuperNoteSave} style={styles.headerButton}>
+                <Text style={[styles.headerButtonText, { color: '#FF6B6B' }]}>Save</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* SuperNote Content */}
+            <View style={styles.superNoteContent}>
+              {/* Chat-like Text Input Section */}
+              <View style={styles.superNoteTextSection}>
+                <TextInput
+                  style={styles.superNoteTextInput}
+                  placeholder="Type your thoughts..."
+                  value={superNoteText}
+                  onChangeText={setSuperNoteText}
+                  multiline
+                  autoFocus
+                  placeholderTextColor="#999"
+                />
+              </View>
+
+              {/* Compact Voice Recording Section */}
+              <View style={styles.superNoteVoiceSection}>
+                {!superNoteIsRecording && !superNoteRecordedUri && (
+                  <TouchableOpacity
+                    style={styles.superNoteRecordButton}
+                    onPress={handleSuperNoteStartRecording}
+                  >
+                    <Feather name="mic" size={20} color="#fff" />
+                    <Text style={styles.superNoteRecordButtonText}>Record Voice</Text>
+                  </TouchableOpacity>
+                )}
+
+                {superNoteIsRecording && (
+                  <View style={styles.superNoteRecordingActive}>
+                    <View style={styles.superNoteRecordingTimer}>
+                      <Text style={styles.superNoteRecordingTimerText}>
+                        {formatDuration(superNoteRecordingDuration)}
+                      </Text>
+                      <Text style={styles.superNoteRecordingIndicatorText}>🔴</Text>
+                    </View>
+                    
+                    <View style={styles.superNoteRecordingControls}>
+                      {superNoteIsPaused ? (
+                        <TouchableOpacity
+                          style={styles.superNoteControlButton}
+                          onPress={handleSuperNoteResumeRecording}
+                        >
+                          <Feather name="play" size={16} color="#fff" />
+                        </TouchableOpacity>
+                      ) : (
+                        <TouchableOpacity
+                          style={styles.superNoteControlButton}
+                          onPress={handleSuperNotePauseRecording}
+                        >
+                          <Feather name="pause" size={16} color="#fff" />
+                        </TouchableOpacity>
+                      )}
+                      
+                      <TouchableOpacity
+                        style={[styles.superNoteControlButton, { backgroundColor: '#dc3545' }]}
+                        onPress={handleSuperNoteStopRecording}
+                      >
+                        <Feather name="square" size={16} color="#fff" />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                )}
+
+                {superNoteRecordedUri && !superNoteIsRecording && (
+                  <View style={styles.superNoteRecordedAudio}>
+                    <View style={styles.superNoteAudioInfo}>
+                      <Feather name="volume-2" size={16} color="#666" />
+                      <Text style={styles.superNoteAudioInfoText}>
+                        {formatDuration(superNoteRecordingDuration)}
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.superNoteReRecordButton}
+                      onPress={() => {
+                        setSuperNoteRecordedUri(null);
+                        setSuperNoteRecordingDuration(0);
+                        setSuperNoteRecording(null);
+                      }}
+                    >
+                      <Text style={styles.superNoteReRecordButtonText}>Re-record</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+              </View>
+
+              {/* Full Drawing Canvas Section */}
+              <View style={styles.superNoteDrawingSection}>
+                <View style={styles.superNoteDrawingHeader}>
+                  <Text style={styles.superNoteSectionTitle}>Draw</Text>
+                  <TouchableOpacity
+                    onPress={() => {
+                      if (superNoteDrawingRef.current) {
+                        superNoteDrawingRef.current.clear();
+                      }
+                      setSuperNoteDrawing([]);
+                    }}
+                    style={styles.clearDrawingButton}
+                  >
+                    <Text style={styles.clearDrawingButtonText}>Clear</Text>
+                  </TouchableOpacity>
+                </View>
+                <View style={styles.superNoteDrawingContainer}>
+                  <DrawingCanvas
+                    ref={superNoteDrawingRef}
+                    onDrawingChange={handleSuperNoteDrawingChange}
+                    onCanvasLayout={handleSuperNoteCanvasLayout}
+                    style={styles.superNoteDrawingCanvas}
+                    initialPaths={[]}
+                  />
+                </View>
+              </View>
+            </View>
           </SafeAreaView>
         </Modal>
       </SafeAreaView>
@@ -1577,5 +1995,206 @@ const styles = StyleSheet.create({
   scoopingDrawing: {
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  // SuperNote styles
+  superNoteHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: KINDLE_BORDER,
+    backgroundColor: KINDLE_BG,
+  },
+  superNoteTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: KINDLE_TEXT,
+    fontFamily: 'Georgia',
+  },
+  superNoteContent: {
+    flex: 1,
+    padding: 20,
+  },
+  superNoteTextSection: {
+    marginBottom: 15,
+  },
+  superNoteTextInput: {
+    fontSize: 16,
+    lineHeight: 24,
+    color: KINDLE_TEXT,
+    fontFamily: 'Georgia',
+    padding: 15,
+    borderRadius: 20,
+    backgroundColor: '#f8f9fa',
+    borderWidth: 1,
+    borderColor: '#e9ecef',
+    minHeight: 50,
+    maxHeight: 120,
+  },
+  superNoteVoiceSection: {
+    marginBottom: 15,
+    alignItems: 'center',
+  },
+  superNoteRecordButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: KINDLE_ACCENT,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 20,
+  },
+  superNoteRecordButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+    marginLeft: 8,
+  },
+  superNoteRecordingActive: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f8f9fa',
+    paddingHorizontal: 15,
+    paddingVertical: 10,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#e9ecef',
+  },
+  superNoteRecordingTimer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginRight: 15,
+  },
+  superNoteRecordingTimerText: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: KINDLE_TEXT,
+    fontFamily: 'Georgia',
+    marginRight: 8,
+  },
+  superNoteRecordingIndicatorText: {
+    fontSize: 16,
+  },
+  superNoteRecordingControls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  superNoteControlButton: {
+    backgroundColor: KINDLE_ACCENT,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 16,
+  },
+  superNoteRecordedAudio: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f8f9fa',
+    paddingHorizontal: 15,
+    paddingVertical: 10,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#e9ecef',
+  },
+  superNoteAudioInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginRight: 15,
+  },
+  superNoteAudioInfoText: {
+    fontSize: 14,
+    color: '#666',
+    marginLeft: 8,
+  },
+  superNoteReRecordButton: {
+    backgroundColor: KINDLE_ACCENT,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+  },
+  superNoteReRecordButtonText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  superNoteDrawingSection: {
+    flex: 1,
+  },
+  superNoteDrawingHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  superNoteSectionTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: KINDLE_TEXT,
+    fontFamily: 'Georgia',
+  },
+  clearDrawingButton: {
+    backgroundColor: '#dc3545',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+  },
+  clearDrawingButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  superNoteDrawingContainer: {
+    flex: 1,
+    backgroundColor: '#f8f9fa',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e9ecef',
+    overflow: 'hidden',
+  },
+  superNoteDrawingCanvas: {
+    flex: 1,
+    backgroundColor: '#fff',
+  },
+  superNoteIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fff3cd', // A light yellow background
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+    alignSelf: 'flex-start',
+    marginBottom: 8,
+    marginTop: 8,
+  },
+  superNoteIndicatorEmoji: {
+    fontSize: 16,
+    marginRight: 4,
+  },
+  superNoteIndicatorText: {
+    fontSize: 12,
+    color: KINDLE_ACCENT,
+    fontWeight: '600',
+  },
+  notesSeparator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginVertical: 10,
+    marginHorizontal: 16,
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    backgroundColor: '#f0f0f0',
+    borderRadius: 10,
+  },
+  separatorLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#ccc',
+  },
+  separatorText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#555',
+    marginHorizontal: 10,
   },
 });
