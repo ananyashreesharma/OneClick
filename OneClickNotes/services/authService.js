@@ -1,237 +1,151 @@
+// authentication service - handles all user login signup stuff
+// think of this as the front desk that manages who can enter your app
+
 import { 
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   signOut,
   sendPasswordResetEmail,
   updateProfile,
-  onAuthStateChanged,
-  EmailAuthProvider,
-  reauthenticateWithCredential,
-  updatePassword
+  updatePassword,
+  onAuthStateChanged
 } from 'firebase/auth';
-import { doc, setDoc, getDoc, updateDoc } from 'firebase/firestore';
-import { auth, db } from '../firebase';
+import { auth } from '../firebase';
 
-// User registration
-export const registerUser = async (email, password, name) => {
+// register a new user - like creating a new account
+// this is what happens when someone clicks sign up
+export const registerUser = async (email, password, displayName) => {
   try {
-    // Create user with email and password
+    // create the user account in firebase
     const userCredential = await createUserWithEmailAndPassword(auth, email, password);
     const user = userCredential.user;
 
-    // Update user profile with display name
-    await updateProfile(user, {
-      displayName: name
-    });
+    // update their profile with their name optional but nice
+    if (displayName) {
+      await updateProfile(user, { displayName });
+    }
 
-    // Create user document in Firestore
-    await setDoc(doc(db, 'users', user.uid), {
-      uid: user.uid,
-      email: user.email,
-      displayName: name,
-      createdAt: new Date().toISOString(),
-      lastLogin: new Date().toISOString(),
-      notesCount: 0,
-      pinnedNotesCount: 0
-    });
-
-    return {
-      success: true,
-      user: {
-        uid: user.uid,
-        email: user.email,
-        displayName: name
-      }
-    };
+    return { success: true, user };
   } catch (error) {
-    console.error('Registration error:', error);
-    return {
-      success: false,
-      error: getAuthErrorMessage(error.code)
-    };
+    // if something goes wrong tell the user what happened
+    return { success: false, error: getAuthErrorMessage(error) };
   }
 };
 
-// User login
+// log in an existing user - like checking in at a hotel
+// this is what happens when someone clicks login
 export const loginUser = async (email, password) => {
   try {
+    // check if their email and password are correct
     const userCredential = await signInWithEmailAndPassword(auth, email, password);
-    const user = userCredential.user;
-
-    // Update last login in Firestore
-    await updateDoc(doc(db, 'users', user.uid), {
-      lastLogin: new Date().toISOString()
-    });
-
-    return {
-      success: true,
-      user: {
-        uid: user.uid,
-        email: user.email,
-        displayName: user.displayName
-      }
-    };
+    return { success: true, user: userCredential.user };
   } catch (error) {
-    console.error('Login error:', error);
-    return {
-      success: false,
-      error: getAuthErrorMessage(error.code)
-    };
+    // if login fails tell them why
+    return { success: false, error: getAuthErrorMessage(error) };
   }
 };
 
-// User logout
+// log out the current user - like checking out of a hotel
+// this is what happens when someone clicks logout
 export const logoutUser = async () => {
   try {
     await signOut(auth);
     return { success: true };
   } catch (error) {
-    console.error('Logout error:', error);
-    return {
-      success: false,
-      error: 'Failed to logout'
-    };
+    return { success: false, error: getAuthErrorMessage(error) };
   }
 };
 
-// Password reset
+// reset password - like getting a new key when you lose yours
+// this is what happens when someone clicks forgot password
 export const resetPassword = async (email) => {
   try {
+    // send them an email with a link to reset their password
     await sendPasswordResetEmail(auth, email);
-    return {
-      success: true,
-      message: 'Password reset email sent successfully'
-    };
+    return { success: true };
   } catch (error) {
-    console.error('Password reset error:', error);
-    return {
-      success: false,
-      error: getAuthErrorMessage(error.code)
-    };
+    return { success: false, error: getAuthErrorMessage(error) };
   }
 };
 
-// Update user profile
-export const updateUserProfile = async (displayName) => {
+// update user profile - like updating your profile picture on social media
+// this is what happens when someone wants to change their name or photo
+export const updateUserProfile = async (updates) => {
   try {
     const user = auth.currentUser;
     if (!user) {
-      throw new Error('No user logged in');
+      return { success: false, error: 'no user is currently logged in' };
     }
 
-    await updateProfile(user, {
-      displayName: displayName
-    });
-
-    // Update in Firestore
-    await updateDoc(doc(db, 'users', user.uid), {
-      displayName: displayName,
-      updatedAt: new Date().toISOString()
-    });
-
-    return {
-      success: true,
-      user: {
-        uid: user.uid,
-        email: user.email,
-        displayName: displayName
-      }
-    };
+    await updateProfile(user, updates);
+    return { success: true, user };
   } catch (error) {
-    console.error('Profile update error:', error);
-    return {
-      success: false,
-      error: error.message
-    };
+    return { success: false, error: getAuthErrorMessage(error) };
   }
 };
 
-// Change password
-export const changePassword = async (currentPassword, newPassword) => {
+// change password - like changing the lock on your door
+// this is what happens when someone wants to update their password
+export const changePassword = async (newPassword) => {
   try {
     const user = auth.currentUser;
     if (!user) {
-      throw new Error('No user logged in');
+      return { success: false, error: 'no user is currently logged in' };
     }
 
-    // Re-authenticate user
-    const credential = EmailAuthProvider.credential(user.email, currentPassword);
-    await reauthenticateWithCredential(user, credential);
-
-    // Update password
     await updatePassword(user, newPassword);
-
-    return {
-      success: true,
-      message: 'Password changed successfully'
-    };
+    return { success: true };
   } catch (error) {
-    console.error('Password change error:', error);
-    return {
-      success: false,
-      error: getAuthErrorMessage(error.code)
-    };
+    return { success: false, error: getAuthErrorMessage(error) };
   }
 };
 
-// Get current user
+// get current user - like asking who is logged in right now
+// this is useful to check if someone is already logged in
 export const getCurrentUser = () => {
   return auth.currentUser;
 };
 
-// Get user profile from Firestore
-export const getUserProfile = async (uid) => {
-  try {
-    const userDoc = await getDoc(doc(db, 'users', uid));
-    if (userDoc.exists()) {
-      return {
-        success: true,
-        profile: userDoc.data()
-      };
-    } else {
-      return {
-        success: false,
-        error: 'User profile not found'
-      };
-    }
-  } catch (error) {
-    console.error('Get user profile error:', error);
-    return {
-      success: false,
-      error: 'Failed to get user profile'
-    };
-  }
+// get user profile - like getting someone's business card
+// this gives you info about the current user
+export const getUserProfile = () => {
+  const user = auth.currentUser;
+  if (!user) return null;
+
+  return {
+    uid: user.uid,
+    email: user.email,
+    displayName: user.displayName,
+    photoURL: user.photoURL,
+    emailVerified: user.emailVerified
+  };
 };
 
-// Auth state listener
+// watch for authentication changes - like having a security camera
+// this tells you when someone logs in or out so you can update the app
 export const onAuthStateChange = (callback) => {
   return onAuthStateChanged(auth, callback);
 };
 
-// Helper function to get user-friendly error messages
-const getAuthErrorMessage = (errorCode) => {
-  switch (errorCode) {
-    case 'auth/email-already-in-use':
-      return 'An account with this email already exists';
-    case 'auth/invalid-email':
-      return 'Please enter a valid email address';
-    case 'auth/operation-not-allowed':
-      return 'Email/password accounts are not enabled. Please contact support.';
-    case 'auth/weak-password':
-      return 'Password should be at least 6 characters long';
-    case 'auth/user-disabled':
-      return 'This account has been disabled. Please contact support.';
+// convert firebase errors into human friendly messages
+// firebase gives us technical errors but users want simple explanations
+const getAuthErrorMessage = (error) => {
+  switch (error.code) {
     case 'auth/user-not-found':
-      return 'No account found with this email address';
+      return 'no account found with this email address please check your email or sign up';
     case 'auth/wrong-password':
-      return 'Incorrect password';
+      return 'incorrect password please try again';
+    case 'auth/email-already-in-use':
+      return 'an account with this email already exists please try logging in instead';
+    case 'auth/weak-password':
+      return 'password is too weak please choose a stronger password at least 6 characters';
+    case 'auth/invalid-email':
+      return 'please enter a valid email address';
     case 'auth/too-many-requests':
-      return 'Too many failed attempts. Please try again later.';
+      return 'too many failed attempts please wait a moment before trying again';
     case 'auth/network-request-failed':
-      return 'Network error. Please check your connection.';
-    case 'auth/invalid-credential':
-      return 'Invalid email or password';
+      return 'network error please check your internet connection and try again';
     default:
-      return 'An error occurred. Please try again.';
+      return 'something went wrong please try again';
   }
 }; 
