@@ -35,3 +35,11 @@ yarn-error.*
 
 # typescript
 *.tsbuildinfo
+
+# Handwriting functionality (disabled for production)
+screens/HandwritingFontScreen.js
+services/handwriting*.js
+python_api/
+HANDWRITING_SETUP.md
+DEEP_LEARNING_IMPLEMENTATION.md
+firebase.js
