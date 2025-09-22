@@ -31,6 +31,7 @@ import { TouchableWithoutFeedback } from 'react-native';
 import { differenceInCalendarDays, parseISO } from 'date-fns';
 import Svg, { Path } from 'react-native-svg';
 import { captureRef } from 'react-native-view-shot';
+import DrawingCanvas from './components/DrawingCanvas';
 
 const { width, height } = Dimensions.get('window');
 
@@ -114,7 +115,20 @@ export default function App() {
     loadThoughts();
     loadPrivateNotes();
     loadPinnedNotes();
+    requestAudioPermissions();
   }, []);
+
+  // Request audio permissions for playback
+  const requestAudioPermissions = async () => {
+    try {
+      const { status } = await Audio.requestPermissionsAsync();
+      if (status !== 'granted') {
+        console.log('Audio permission not granted');
+      }
+    } catch (error) {
+      console.error('Error requesting audio permissions:', error);
+    }
+  };
 
   const loadThoughts = async () => {
     try {
@@ -151,7 +165,11 @@ export default function App() {
       id: generateUniqueId(),
       timestamp: new Date().toISOString(),
       text: newThought.text || '',
-      drawingPaths: newThought.drawingData || [],
+      drawingPaths: newThought.drawingPaths || newThought.drawingData || [],
+      drawing: newThought.drawingPaths || newThought.drawingData || [], // Also store as 'drawing' for compatibility
+      drawingImageUri: newThought.drawingImageUri || null,
+      voiceUri: newThought.voiceUri || null,
+      voiceDuration: newThought.voiceDuration || 0,
       voiceNotes: newThought.voiceNotes || [],
       mood: currentMood,
     };
@@ -193,20 +211,71 @@ export default function App() {
     setLastInputMode('drawing');
   };
 
-  const handleDoneDrawing = () => {
+  const handleDoneDrawing = async () => {
     if (drawingData && drawingData.length > 0) {
-      addThought({ drawingData: drawingData });
+      try {
+        // Add a small delay to ensure the drawing is fully rendered
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+        // Capture the drawing as an image
+        const imageUri = await captureRef(drawingRef, {
+          format: 'jpg',
+          quality: 0.8,
+          result: 'data-uri', // Use data URI for better compatibility
+        });
+        
+        console.log('Drawing captured:', imageUri);
+        
+        addThought({ 
+          text: 'Drawing note',
+          drawingPaths: drawingData,
+          drawingImageUri: imageUri
+        });
+      } catch (error) {
+        console.error('Error capturing drawing:', error);
+        // Fallback to just storing the paths - still show the drawing
+        addThought({ 
+          text: 'Drawing note',
+          drawingPaths: drawingData,
+          drawingImageUri: null // Explicitly set to null to show SVG fallback
+        });
+      }
     }
     setIsDrawing(false);
   };
 
   const handleStartRecording = () => {
+    console.log('Starting recording...');
+    // Reset all audio state for new recording
+    setRecordedUri(null);
+    setAudioDuration(0);
+    setRecordingDuration(0);
+    setIsRecording(false);
+    setRecording(null);
+    if (audioPlayback) {
+      audioPlayback.unloadAsync();
+      setAudioPlayback(null);
+      setAudioIsPlaying(false);
+    }
+    if (recordingInterval.current) {
+      clearInterval(recordingInterval.current);
+      recordingInterval.current = null;
+    }
+    
+    console.log('Setting audio modal visible to true');
     setAudioModalVisible(true);
     setLastInputMode('recording');
   };
 
   const handleLockPress = () => {
     setPrivateModalVisible(true);
+  };
+
+  // Format duration in MM:SS format
+  const formatDuration = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
   const loadPrivateNotes = async () => {
@@ -264,16 +333,13 @@ export default function App() {
         
         {/* Header */}
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 16, marginBottom: 8 }}>
-          <View style={{ width: 32 }} />
-          <Text style={{ fontSize: 22, fontWeight: 'bold', textAlign: 'center', flex: 1, fontFamily: 'Georgia' }}>Lao Note</Text>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16 }}>
-            <TouchableOpacity style={{ marginRight: 8 }} onPress={() => Alert.alert('Search', 'Search functionality will be added back soon!')}>
-              <Feather name="search" size={24} color="#222" />
-            </TouchableOpacity>
-            <TouchableOpacity onPress={handleLockPress}>
-              <MaterialCommunityIcons name="lock-outline" size={26} color="#222" />
-            </TouchableOpacity>
-          </View>
+          <TouchableOpacity onPress={() => Alert.alert('Search', 'Search functionality will be added back soon!')}>
+            <Text style={{ fontSize: 14, color: '#666', opacity: 0.7, fontFamily: 'Georgia' }}>search</Text>
+          </TouchableOpacity>
+          <View style={{ flex: 1 }} />
+          <TouchableOpacity onPress={handleLockPress}>
+            <Text style={{ fontSize: 14, color: '#666', opacity: 0.5, fontFamily: 'Georgia' }}>private notes</Text>
+          </TouchableOpacity>
         </View>
 
         {/* Segmented control */}
@@ -310,12 +376,152 @@ export default function App() {
             {thoughts.length === 0 ? (
               <Text style={{ padding: 20, textAlign: 'center', color: '#666' }}>Your notes will appear here</Text>
             ) : (
-              thoughts.map((thought, index) => (
+              thoughts.map((thought, index) => {
+                console.log('Rendering thought:', thought);
+                return (
                 <View key={thought.id || index} style={styles.noteCard}>
-                  <Text style={styles.noteText}>{thought.text}</Text>
+                  {/* Note Text */}
+                  {thought.text && thought.text !== 'Voice note' && thought.text !== 'Drawing note' && (
+                    <Text style={styles.noteText}>{thought.text}</Text>
+                  )}
+                  
+                  {/* Show note type if it's just a voice or drawing note */}
+                  {thought.text === 'Voice note' && !thought.voiceUri && (
+                    <Text style={styles.noteText}>Voice note</Text>
+                  )}
+                  {thought.text === 'Drawing note' && (!thought.drawingPaths || thought.drawingPaths.length === 0) && (
+                    <Text style={styles.noteText}>Drawing note</Text>
+                  )}
+                  
+                  {/* Voice Note Controls */}
+                  {thought.voiceUri && (
+                    <View style={styles.voiceNoteContainer}>
+                      <View style={styles.voiceNoteHeader}>
+                        <Text style={styles.voiceNoteLabel}>🎤 Voice Note</Text>
+                        {thought.voiceDuration && (
+                          <Text style={styles.voiceDuration}>{formatDuration(thought.voiceDuration)}</Text>
+                        )}
+                      </View>
+                      <TouchableOpacity
+                        style={styles.playButton}
+                        onPress={async () => {
+                          try {
+                            if (playingNoteId === thought.id && isPlaying) {
+                              // Pause current playback
+                              if (playingSound) {
+                                await playingSound.pauseAsync();
+                                setIsPlaying(false);
+                              }
+                            } else {
+                              // Stop any current playback
+                              if (playingSound) {
+                                await playingSound.stopAsync();
+                                await playingSound.unloadAsync();
+                              }
+                              
+                              console.log('Attempting to play voice note:', thought.voiceUri);
+                              
+                              // Check if file exists and is accessible
+                              if (!thought.voiceUri) {
+                                Alert.alert('Playback Error', 'Voice note file not found.');
+                                return;
+                              }
+                              
+                              // Start new playback with error handling and maximum volume
+                              const { sound } = await Audio.Sound.createAsync(
+                                { uri: thought.voiceUri },
+                                { shouldPlay: false, volume: 1.0 }
+                              );
+                              
+                              // Set volume to maximum
+                              await sound.setVolumeAsync(1.0);
+                              
+                              setPlayingSound(sound);
+                              setPlayingNoteId(thought.id);
+                              
+                              sound.setOnPlaybackStatusUpdate((status) => {
+                                console.log('Playback status:', status);
+                                if (status.didJustFinish) {
+                                  setIsPlaying(false);
+                                  setPlayingNoteId(null);
+                                  sound.unloadAsync();
+                                }
+                              });
+                              
+                              await sound.playAsync();
+                              setIsPlaying(true);
+                            }
+                          } catch (error) {
+                            console.error('Playback error:', error);
+                            Alert.alert('Playback Error', `Failed to play voice note: ${error.message}`);
+                          }
+                        }}
+                      >
+                        <Text style={styles.playButtonText}>
+                          {playingNoteId === thought.id && isPlaying ? '⏸️' : '▶️'}
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                  
+                  {/* Drawing Display */}
+                  {((thought.drawingPaths && thought.drawingPaths.length > 0) || thought.drawingImageUri || (thought.drawing && thought.drawing.length > 0)) && (
+                    <View style={styles.drawingContainer}>
+                      <Text style={styles.drawingLabel}>🎨 Drawing</Text>
+                      <View style={styles.drawingPreview}>
+                        {thought.drawingImageUri ? (
+                          <View>
+                            <Image 
+                              source={{ uri: thought.drawingImageUri }} 
+                              style={styles.drawingImage}
+                              resizeMode="contain"
+                              onError={(error) => {
+                                console.log('Image load error:', error);
+                              }}
+                              onLoad={() => {
+                                console.log('Image loaded successfully:', thought.drawingImageUri);
+                              }}
+                            />
+                            <Text style={{ fontSize: 10, color: '#999', textAlign: 'center', marginTop: 4 }}>
+                              {(thought.drawingPaths || thought.drawing) ? (thought.drawingPaths || thought.drawing).length : 0} strokes
+                            </Text>
+                          </View>
+                        ) : (thought.drawingPaths || thought.drawing) && (thought.drawingPaths || thought.drawing).length > 0 ? (
+                          <View>
+                            <Svg width={200} height={150} style={styles.drawingSvg}>
+                              {(thought.drawingPaths || thought.drawing).slice(0, 3).map((path, pathIndex) => (
+                                <Path
+                                  key={pathIndex}
+                                  d={path}
+                                  stroke="#222"
+                                  strokeWidth={2}
+                                  fill="none"
+                                />
+                              ))}
+                              {(thought.drawingPaths || thought.drawing).length > 3 && (
+                                <Text x={100} y={75} textAnchor="middle" fontSize={14} fill="#666">
+                                  +{(thought.drawingPaths || thought.drawing).length - 3} more strokes
+                                </Text>
+                              )}
+                            </Svg>
+                            <Text style={{ fontSize: 10, color: '#999', textAlign: 'center', marginTop: 4 }}>
+                              SVG Preview ({(thought.drawingPaths || thought.drawing).length} strokes)
+                            </Text>
+                          </View>
+                        ) : (
+                          <Text style={{ fontSize: 12, color: '#999', textAlign: 'center' }}>
+                            Drawing preview not available
+                          </Text>
+                        )}
+                      </View>
+                    </View>
+                  )}
+                  
+                  {/* Note Time */}
                   <Text style={styles.noteTime}>{new Date(thought.timestamp).toLocaleString()}</Text>
                 </View>
-              ))
+                );
+              })
             )}
           </ScrollView>
         )}
@@ -342,57 +548,294 @@ export default function App() {
         {/* Drawing modal */}
         <Modal visible={isDrawing} animationType="slide" presentationStyle="fullScreen">
           <SafeAreaView style={styles.fullScreenModal}>
-            <View style={{ flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', width: '100%' }}>
-              <TouchableOpacity onPress={handleDoneDrawing} style={{ padding: 16 }}>
-                <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#222' }}>Done</Text>
+            {/* Header with controls */}
+            <View style={{ 
+              flexDirection: 'row', 
+              justifyContent: 'space-between', 
+              alignItems: 'center', 
+              paddingHorizontal: 16, 
+              paddingVertical: 12,
+              backgroundColor: '#f7efe7',
+              borderBottomWidth: 1,
+              borderBottomColor: '#e0d5c7'
+            }}>
+              <TouchableOpacity 
+                onPress={() => setIsDrawing(false)} 
+                style={{ padding: 8 }}
+              >
+                <Text style={{ fontSize: 16, color: '#8B4513', fontWeight: '600' }}>Cancel</Text>
+              </TouchableOpacity>
+              
+              <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#8B4513', fontFamily: 'Georgia' }}>Draw</Text>
+              
+              <TouchableOpacity 
+                onPress={handleDoneDrawing} 
+                style={{ padding: 8 }}
+              >
+                <Text style={{ fontSize: 16, color: '#8B4513', fontWeight: '600' }}>Done</Text>
               </TouchableOpacity>
             </View>
-            <View style={{ flex: 1, backgroundColor: '#fff', margin: 16, borderRadius: 12, justifyContent: 'center', alignItems: 'center' }}>
-              <Text style={{ fontSize: 18, color: '#666' }}>Drawing canvas will be added back soon!</Text>
-              <TouchableOpacity 
-                style={{ marginTop: 20, backgroundColor: '#007bff', padding: 12, borderRadius: 8 }}
-                onPress={() => {
-                  addThought({ text: 'Drawing note' });
-                  setIsDrawing(false);
+            
+            {/* Full screen drawing canvas */}
+            <View style={{ flex: 1, backgroundColor: '#fff' }} ref={drawingRef}>
+              <DrawingCanvas
+                style={{ flex: 1 }}
+                initialPaths={drawingData}
+                onDrawingChange={(paths) => {
+                  setDrawingData(paths);
                 }}
-              >
-                <Text style={{ color: '#fff', fontSize: 16 }}>Add Drawing Note</Text>
-              </TouchableOpacity>
+              />
             </View>
           </SafeAreaView>
         </Modal>
 
         {/* Audio Recording Modal */}
         <Modal visible={audioModalVisible} animationType="slide" presentationStyle="fullScreen">
-          <SafeAreaView style={styles.fullScreenModal}>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-              <TouchableOpacity onPress={() => setAudioModalVisible(false)} style={{ padding: 16 }}>
-                <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#222' }}>Cancel</Text>
-              </TouchableOpacity>
+          {console.log('Audio modal visible:', audioModalVisible)}
+          <SafeAreaView style={[styles.fullScreenModal, { backgroundColor: '#1a1a1a' }]}>
+            {/* Header */}
+            <View style={{ 
+              flexDirection: 'row', 
+              justifyContent: 'space-between', 
+              alignItems: 'center', 
+              paddingHorizontal: 16, 
+              paddingVertical: 12,
+              backgroundColor: '#1a1a1a'
+            }}>
               <TouchableOpacity 
                 onPress={() => {
-                  addThought({ text: 'Voice note' });
+                  // Reset all audio state when canceling
                   setAudioModalVisible(false);
+                  setRecordedUri(null);
+                  setAudioDuration(0);
+                  setRecordingDuration(0);
+                  setIsRecording(false);
+                  if (recording) {
+                    recording.stopAndUnloadAsync();
+                    setRecording(null);
+                  }
+                  if (audioPlayback) {
+                    audioPlayback.unloadAsync();
+                    setAudioPlayback(null);
+                    setAudioIsPlaying(false);
+                  }
+                  if (recordingInterval.current) {
+                    clearInterval(recordingInterval.current);
+                    recordingInterval.current = null;
+                  }
                 }} 
-                style={{ padding: 16 }}
+                style={{ padding: 8 }}
               >
-                <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#222' }}>Done</Text>
+                <Text style={{ fontSize: 16, color: '#ff3b30', fontWeight: '600' }}>Cancel</Text>
+              </TouchableOpacity>
+              
+              <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#fff', fontFamily: 'Georgia' }}>Voice Memos</Text>
+              
+              <TouchableOpacity 
+                onPress={() => {
+                  if (recordedUri) {
+                    console.log('Adding voice note:', { recordedUri, audioDuration });
+                    addThought({ text: 'Voice note', voiceUri: recordedUri, voiceDuration: audioDuration });
+                  }
+                  
+                  // Reset all audio state
+                  setAudioModalVisible(false);
+                  setRecordedUri(null);
+                  setAudioDuration(0);
+                  setRecordingDuration(0);
+                  setIsRecording(false);
+                  setRecording(null);
+                  if (audioPlayback) {
+                    audioPlayback.unloadAsync();
+                    setAudioPlayback(null);
+                    setAudioIsPlaying(false);
+                  }
+                  if (recordingInterval.current) {
+                    clearInterval(recordingInterval.current);
+                    recordingInterval.current = null;
+                  }
+                }} 
+                style={{ padding: 8 }}
+              >
+                <Text style={{ 
+                  fontSize: 16, 
+                  color: recordedUri ? '#007aff' : '#666', 
+                  fontWeight: '600' 
+                }}>Done</Text>
               </TouchableOpacity>
             </View>
-            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-              <Text style={{ fontSize: 24, color: '#666', marginBottom: 20 }}>🎤 Voice Recording</Text>
-              <Text style={{ fontSize: 16, color: '#999', textAlign: 'center', paddingHorizontal: 40 }}>
-                Audio recording functionality will be added back soon!
-              </Text>
-              <TouchableOpacity 
-                style={{ marginTop: 30, backgroundColor: '#007bff', padding: 15, borderRadius: 25 }}
-                onPress={() => {
-                  addThought({ text: 'Voice note' });
-                  setAudioModalVisible(false);
+            
+            {/* Recording Interface */}
+            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40 }}>
+              {/* Recording Button */}
+              <TouchableOpacity
+                style={{
+                  width: 120,
+                  height: 120,
+                  borderRadius: 60,
+                  backgroundColor: isRecording ? '#ff3b30' : '#333',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  marginBottom: 40,
+                  shadowColor: '#000',
+                  shadowOffset: { width: 0, height: 4 },
+                  shadowOpacity: 0.3,
+                  shadowRadius: 8,
+                  elevation: 8,
+                }}
+                onPress={async () => {
+                  try {
+                    if (!isRecording) {
+                      // Start recording
+                      const { status } = await Audio.requestPermissionsAsync();
+                      if (status !== 'granted') {
+                        Alert.alert('Permission needed', 'Please grant microphone permission to record voice notes.');
+                        return;
+                      }
+
+                      await Audio.setAudioModeAsync({
+                        allowsRecordingIOS: true,
+                        playsInSilentModeIOS: true,
+                        shouldDuckAndroid: false,
+                        staysActiveInBackground: false,
+                        interruptionModeIOS: Audio.INTERRUPTION_MODE_IOS_DO_NOT_MIX,
+                        interruptionModeAndroid: Audio.INTERRUPTION_MODE_ANDROID_DO_NOT_MIX,
+                        playThroughEarpieceAndroid: false,
+                      });
+
+                      const recording = new Audio.Recording();
+                      await recording.prepareToRecordAsync(Audio.RECORDING_OPTIONS_PRESET_HIGH_QUALITY);
+                      await recording.startAsync();
+                      
+                      setRecording(recording);
+                      setIsRecording(true);
+                      setRecordingDuration(0);
+                      
+                      // Start timer
+                      recordingInterval.current = setInterval(() => {
+                        setRecordingDuration(prev => prev + 1);
+                      }, 1000);
+                    } else {
+                      // Stop recording
+                      await recording.stopAndUnloadAsync();
+                      const uri = recording.getURI();
+                      setRecordedUri(uri);
+                      setIsRecording(false);
+                      setRecording(null);
+                      
+                      // Stop timer
+                      if (recordingInterval.current) {
+                        clearInterval(recordingInterval.current);
+                        recordingInterval.current = null;
+                      }
+                    }
+                  } catch (error) {
+                    console.error('Recording error:', error);
+                    Alert.alert('Recording Error', 'Failed to record audio. Please try again.');
+                  }
                 }}
               >
-                <Text style={{ color: '#fff', fontSize: 18 }}>Add Voice Note</Text>
+                <View style={{
+                  width: isRecording ? 40 : 50,
+                  height: isRecording ? 40 : 50,
+                  borderRadius: isRecording ? 8 : 25,
+                  backgroundColor: '#fff',
+                }} />
               </TouchableOpacity>
+              
+              {/* Recording Status */}
+              <Text style={{ 
+                fontSize: 24, 
+                color: '#fff', 
+                fontWeight: 'bold',
+                marginBottom: 8,
+                fontFamily: 'Georgia'
+              }}>
+                {isRecording ? 'Recording...' : recordedUri ? 'Recording Complete' : 'Tap to Record'}
+              </Text>
+              
+              {/* Timer */}
+              <Text style={{ 
+                fontSize: 16, 
+                color: '#666', 
+                marginBottom: 20 
+              }}>
+                {formatDuration(recordingDuration)}
+              </Text>
+              
+              {/* Playback Controls (if recording exists) */}
+              {recordedUri && (
+                <View style={{ 
+                  flexDirection: 'row', 
+                  alignItems: 'center', 
+                  gap: 20,
+                  marginTop: 20 
+                }}>
+                  <TouchableOpacity
+                    style={{
+                      width: 50,
+                      height: 50,
+                      borderRadius: 25,
+                      backgroundColor: '#007aff',
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                    }}
+                    onPress={async () => {
+                      try {
+                        if (audioPlayback) {
+                          if (audioIsPlaying) {
+                            await audioPlayback.pauseAsync();
+                            setAudioIsPlaying(false);
+                          } else {
+                            await audioPlayback.playAsync();
+                            setAudioIsPlaying(true);
+                          }
+                        } else {
+                          const { sound } = await Audio.Sound.createAsync({ uri: recordedUri }, { volume: 1.0 });
+                          await sound.setVolumeAsync(1.0);
+                          setAudioPlayback(sound);
+                          await sound.playAsync();
+                          setAudioIsPlaying(true);
+                          
+                          sound.setOnPlaybackStatusUpdate((status) => {
+                            if (status.didJustFinish) {
+                              setAudioIsPlaying(false);
+                            }
+                          });
+                        }
+                      } catch (error) {
+                        console.error('Playback error:', error);
+                      }
+                    }}
+                  >
+                    <Text style={{ color: '#fff', fontSize: 20 }}>
+                      {audioIsPlaying ? '⏸️' : '▶️'}
+                    </Text>
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity
+                    style={{
+                      width: 50,
+                      height: 50,
+                      borderRadius: 25,
+                      backgroundColor: '#333',
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                    }}
+                    onPress={() => {
+                      setRecordedUri(null);
+                      setAudioDuration(0);
+                      if (audioPlayback) {
+                        audioPlayback.unloadAsync();
+                        setAudioPlayback(null);
+                        setAudioIsPlaying(false);
+                      }
+                    }}
+                  >
+                    <Text style={{ color: '#fff', fontSize: 20 }}>🗑️</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
             </View>
           </SafeAreaView>
         </Modal>
@@ -413,10 +856,10 @@ export default function App() {
               <Text style={[styles.title, { color: '#fff' }]}>Private Notes</Text>
               <View style={styles.headerActions}>
                 <TouchableOpacity style={styles.headerButton}>
-                  <Feather name="search" size={24} color="#fff" />
+                  <Text style={{ fontSize: 12, color: '#fff', opacity: 0.6, fontFamily: 'Georgia' }}>search</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={styles.headerButton}>
-                  <MaterialCommunityIcons name="lock" size={24} color="#fff" />
+                  <Text style={{ fontSize: 12, color: '#fff', opacity: 0.4, fontFamily: 'Georgia' }}>private notes</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -523,5 +966,76 @@ const styles = StyleSheet.create({
   noteTime: {
     fontSize: 12,
     color: '#999',
+  },
+  voiceNoteContainer: {
+    marginVertical: 8,
+    padding: 12,
+    backgroundColor: '#f8f9fa',
+    borderRadius: 8,
+    borderLeftWidth: 3,
+    borderLeftColor: '#007aff',
+  },
+  voiceNoteHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  voiceNoteLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#007aff',
+  },
+  voiceDuration: {
+    fontSize: 12,
+    color: '#666',
+    fontFamily: 'monospace',
+  },
+  playButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#007aff',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  playButtonText: {
+    fontSize: 16,
+    color: '#fff',
+  },
+  drawingContainer: {
+    marginVertical: 8,
+    padding: 12,
+    backgroundColor: '#f8f9fa',
+    borderRadius: 8,
+    borderLeftWidth: 3,
+    borderLeftColor: '#ff9500',
+  },
+  drawingLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#ff9500',
+    marginBottom: 8,
+  },
+  drawingPreview: {
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    borderRadius: 8,
+    padding: 8,
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+  },
+  drawingImage: {
+    width: 200,
+    height: 150,
+    borderRadius: 4,
+  },
+  drawingSvg: {
+    borderRadius: 4,
   },
 });
